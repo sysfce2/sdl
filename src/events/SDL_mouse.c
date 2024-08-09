@@ -33,6 +33,8 @@
 
 /* #define DEBUG_MOUSE */
 
+#define WARP_EMULATION_THRESHOLD_NS SDL_MS_TO_NS(30)
+
 typedef struct SDL_MouseInstance
 {
     SDL_MouseID instance_id;
@@ -117,6 +119,18 @@ static void SDLCALL SDL_MouseRelativeSystemScaleChanged(void *userdata, const ch
     SDL_Mouse *mouse = (SDL_Mouse *)userdata;
 
     mouse->enable_relative_system_scale = SDL_GetStringBoolean(hint, SDL_FALSE);
+}
+
+static void SDLCALL SDL_MouseWarpEmulationChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
+{
+    SDL_Mouse *mouse = (SDL_Mouse *)userdata;
+
+    mouse->warp_emulation_hint = SDL_GetStringBoolean(hint, SDL_TRUE);
+
+    if (!mouse->warp_emulation_hint && mouse->warp_emulation_active) {
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+        mouse->warp_emulation_active = SDL_FALSE;
+    }
 }
 
 static void SDLCALL SDL_TouchMouseEventsChanged(void *userdata, const char *name, const char *oldValue, const char *hint)
@@ -210,6 +224,9 @@ int SDL_PreInitMouse(void)
 
     SDL_AddHintCallback(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE,
                         SDL_MouseRelativeSystemScaleChanged, mouse);
+
+    SDL_AddHintCallback(SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE,
+                        SDL_MouseWarpEmulationChanged, mouse);
 
     SDL_AddHintCallback(SDL_HINT_TOUCH_MOUSE_EVENTS,
                         SDL_TouchMouseEventsChanged, mouse);
@@ -312,7 +329,7 @@ void SDL_RemoveMouse(SDL_MouseID mouseID, SDL_bool send_event)
         return;
     }
 
-    SDL_FreeLater(SDL_mice[mouse_index].name);  // SDL_GetMouseInstanceName returns this pointer.
+    SDL_free(SDL_mice[mouse_index].name);
 
     if (mouse_index != SDL_mouse_count - 1) {
         SDL_memcpy(&SDL_mice[mouse_index], &SDL_mice[mouse_index + 1], (SDL_mouse_count - mouse_index - 1) * sizeof(SDL_mice[mouse_index]));
@@ -370,13 +387,13 @@ SDL_MouseID *SDL_GetMice(int *count)
     return mice;
 }
 
-const char *SDL_GetMouseInstanceName(SDL_MouseID instance_id)
+const char *SDL_GetMouseNameForID(SDL_MouseID instance_id)
 {
     int mouse_index = SDL_GetMouseIndex(instance_id);
     if (mouse_index < 0) {
         return NULL;
     }
-    return SDL_mice[mouse_index].name;
+    return SDL_GetPersistentString(SDL_mice[mouse_index].name);
 }
 
 void SDL_SetDefaultCursor(SDL_Cursor *cursor)
@@ -409,7 +426,7 @@ void SDL_SetDefaultCursor(SDL_Cursor *cursor)
             }
         }
 
-        if (mouse->FreeCursor && default_cursor->driverdata) {
+        if (mouse->FreeCursor && default_cursor->internal) {
             mouse->FreeCursor(default_cursor);
         } else {
             SDL_free(default_cursor);
@@ -724,7 +741,7 @@ static int SDL_PrivateSendMouseMotion(Uint64 timestamp, SDL_Window *window, SDL_
     float xrel = 0.0f;
     float yrel = 0.0f;
 
-    if (!mouse->relative_mode && mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID) {
+    if ((!mouse->relative_mode || mouse->warp_emulation_active) && mouseID != SDL_TOUCH_MOUSEID && mouseID != SDL_PEN_MOUSEID) {
         /* We're not in relative mode, so all mouse events are global mouse events */
         mouseID = SDL_GLOBAL_MOUSE_ID;
     }
@@ -1132,6 +1149,9 @@ void SDL_QuitMouse(void)
     SDL_DelHintCallback(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE,
                         SDL_MouseRelativeSystemScaleChanged, mouse);
 
+    SDL_DelHintCallback(SDL_HINT_MOUSE_EMULATE_WARP_WITH_RELATIVE,
+                        SDL_MouseWarpEmulationChanged, mouse);
+
     SDL_DelHintCallback(SDL_HINT_TOUCH_MOUSE_EVENTS,
                         SDL_TouchMouseEventsChanged, mouse);
 
@@ -1253,9 +1273,55 @@ void SDL_PerformWarpMouseInWindow(SDL_Window *window, float x, float y, SDL_bool
     }
 }
 
+void SDL_DisableMouseWarpEmulation()
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+
+    if (mouse->warp_emulation_active) {
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+    }
+
+    mouse->warp_emulation_prohibited = SDL_TRUE;
+}
+
+static void SDL_MaybeEnableWarpEmulation(SDL_Window *window, float x, float y)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+
+    if (!mouse->warp_emulation_prohibited && mouse->warp_emulation_hint && !mouse->cursor_shown && !mouse->warp_emulation_active) {
+        if (!window) {
+            window = mouse->focus;
+        }
+
+        if (window) {
+            const float cx = window->w / 2.f;
+            const float cy = window->h / 2.f;
+            if (x >= SDL_floorf(cx) && x <= SDL_ceilf(cx) &&
+                y >= SDL_floorf(cy) && y <= SDL_ceilf(cy)) {
+
+                /* Require two consecutive warps to the center within a certain timespan to enter warp emulation mode. */
+                const Uint64 now = SDL_GetTicksNS();
+                if (now - mouse->last_center_warp_time_ns < WARP_EMULATION_THRESHOLD_NS) {
+                    if (SDL_SetRelativeMouseMode(SDL_TRUE) == 0) {
+                        mouse->warp_emulation_active = SDL_TRUE;
+                    }
+                }
+
+                mouse->last_center_warp_time_ns = now;
+                return;
+            }
+        }
+
+        mouse->last_center_warp_time_ns = 0;
+    }
+}
+
 void SDL_WarpMouseInWindow(SDL_Window *window, float x, float y)
 {
-    SDL_PerformWarpMouseInWindow(window, x, y, SDL_FALSE);
+    SDL_Mouse *mouse = SDL_GetMouse();
+    SDL_MaybeEnableWarpEmulation(window, x, y);
+
+    SDL_PerformWarpMouseInWindow(window, x, y, mouse->warp_emulation_active);
 }
 
 int SDL_WarpMouseGlobal(float x, float y)
@@ -1283,6 +1349,11 @@ int SDL_SetRelativeMouseMode(SDL_bool enabled)
 {
     SDL_Mouse *mouse = SDL_GetMouse();
     SDL_Window *focusWindow = SDL_GetKeyboardFocus();
+
+    if (!enabled) {
+        /* If warps were being emulated, reset the flag. */
+        mouse->warp_emulation_active = SDL_FALSE;
+    }
 
     if (enabled == mouse->relative_mode) {
         return 0;
@@ -1346,6 +1417,17 @@ SDL_bool SDL_GetRelativeMouseMode(void)
     SDL_Mouse *mouse = SDL_GetMouse();
 
     return mouse->relative_mode;
+}
+
+void SDL_UpdateRelativeMouseMode(void)
+{
+    SDL_Mouse *mouse = SDL_GetMouse();
+    SDL_Window *focus = SDL_GetKeyboardFocus();
+    SDL_bool relative_mode = (focus && (focus->flags & SDL_WINDOW_MOUSE_RELATIVE_MODE));
+
+    if (relative_mode != mouse->relative_mode) {
+        SDL_SetRelativeMouseMode(relative_mode);
+    }
 }
 
 int SDL_UpdateMouseCapture(SDL_bool force_release)
@@ -1493,8 +1575,8 @@ SDL_Cursor *SDL_CreateColorCursor(SDL_Surface *surface, int hot_x, int hot_y)
         return NULL;
     }
 
-    if (surface->format->format != SDL_PIXELFORMAT_ARGB8888) {
-        temp = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_ARGB8888);
+    if (surface->format != SDL_PIXELFORMAT_ARGB8888) {
+        temp = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_ARGB8888);
         if (!temp) {
             return NULL;
         }
@@ -1628,7 +1710,7 @@ void SDL_DestroyCursor(SDL_Cursor *cursor)
                 mouse->cursors = curr->next;
             }
 
-            if (mouse->FreeCursor && curr->driverdata) {
+            if (mouse->FreeCursor && curr->internal) {
                 mouse->FreeCursor(curr);
             } else {
                 SDL_free(curr);
@@ -1641,6 +1723,11 @@ void SDL_DestroyCursor(SDL_Cursor *cursor)
 int SDL_ShowCursor(void)
 {
     SDL_Mouse *mouse = SDL_GetMouse();
+
+    if (mouse->warp_emulation_active) {
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+        mouse->warp_emulation_active = SDL_FALSE;
+    }
 
     if (!mouse->cursor_shown) {
         mouse->cursor_shown = SDL_TRUE;

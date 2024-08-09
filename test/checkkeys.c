@@ -73,23 +73,21 @@ static void UpdateTextWindowInputRect(SDL_WindowID id)
             SDLTest_TextWindow *textwindow = windowstates[i].textwindow;
             int w, h;
             SDL_Rect rect;
+            int cursor = 0;
             int current = textwindow->current;
             const char *current_line = textwindow->lines[current];
 
             SDL_GetWindowSize(state->windows[i], &w, &h);
 
-            rect.x = (int)TEXT_WINDOW_OFFSET_X;
             if (current_line) {
-                rect.x += (int)SDL_utf8strlen(current_line) * FONT_CHARACTER_SIZE;
+                cursor = (int)SDL_utf8strlen(current_line) * FONT_CHARACTER_SIZE;
             }
+
+            rect.x = (int)TEXT_WINDOW_OFFSET_X;
             rect.y = (int)TEXT_WINDOW_OFFSET_Y + current * FONT_LINE_HEIGHT;
-#if 1
-            rect.w = FONT_CHARACTER_SIZE;
-#else
             rect.w = (int)(w - (2 * TEXT_WINDOW_OFFSET_X));
-#endif
-            rect.h = FONT_LINE_HEIGHT;
-            SDL_SetTextInputRect(state->windows[i], &rect);
+            rect.h = FONT_CHARACTER_SIZE;
+            SDL_SetTextInputArea(state->windows[i], &rect, cursor);
             return;
         }
     }
@@ -171,46 +169,6 @@ static void print_modifiers(char **text, size_t *maxlen, SDL_Keymod mod)
     }
     if (mod & SDL_KMOD_SCROLL) {
         print_string(text, maxlen, " SCROLL");
-    }
-}
-
-static void PrintKeymap(void)
-{
-    SDL_Keymod mods[] = {
-        SDL_KMOD_NONE,
-        SDL_KMOD_SHIFT,
-        SDL_KMOD_CAPS,
-        (SDL_KMOD_SHIFT | SDL_KMOD_CAPS),
-        SDL_KMOD_ALT,
-        (SDL_KMOD_ALT | SDL_KMOD_SHIFT),
-        (SDL_KMOD_ALT | SDL_KMOD_CAPS),
-        (SDL_KMOD_ALT | SDL_KMOD_SHIFT | SDL_KMOD_CAPS),
-        SDL_KMOD_MODE,
-        (SDL_KMOD_MODE | SDL_KMOD_SHIFT),
-        (SDL_KMOD_MODE | SDL_KMOD_CAPS),
-        (SDL_KMOD_MODE | SDL_KMOD_SHIFT | SDL_KMOD_CAPS)
-    };
-    int i, m;
-
-    SDL_Log("Differences from the default keymap:\n");
-    for (m = 0; m < SDL_arraysize(mods); ++m) {
-        for (i = 0; i < SDL_NUM_SCANCODES; ++i) {
-            SDL_Keycode key = SDL_GetKeyFromScancode((SDL_Scancode)i, mods[m]);
-            SDL_Keycode default_key = SDL_GetDefaultKeyFromScancode((SDL_Scancode)i, mods[m]);
-            if (key != default_key) {
-                char message[512];
-                char *spot;
-                size_t left;
-
-                spot = message;
-                left = sizeof(message);
-
-                print_string(&spot, &left, "Scancode %s", SDL_GetScancodeName((SDL_Scancode)i));
-                print_modifiers(&spot, &left, mods[m]);
-                print_string(&spot, &left, ": %s 0x%x (default: %s 0x%x)", SDL_GetKeyName(key), key, SDL_GetKeyName(default_key), default_key);
-                SDL_Log("%s", message);
-            }
-        }
     }
 }
 
@@ -410,7 +368,7 @@ static void loop(void)
             break;
         case SDL_EVENT_FINGER_DOWN:
         {
-            SDL_Window *window = SDL_GetWindowFromID(event.tfinger.windowID);
+            SDL_Window *window = SDL_GetWindowFromEvent(&event);
             if (SDL_TextInputActive(window)) {
                 SDL_Log("Stopping text input for window %" SDL_PRIu32 "\n", event.tfinger.windowID);
                 SDL_StopTextInput(window);
@@ -422,7 +380,7 @@ static void loop(void)
         }
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (event.button.button == SDL_BUTTON_RIGHT) {
-                SDL_Window *window = SDL_GetWindowFromID(event.button.windowID);
+                SDL_Window *window = SDL_GetWindowFromEvent(&event);
                 if (SDL_TextInputActive(window)) {
                     SDL_Log("Stopping text input for window %" SDL_PRIu32 "\n", event.button.windowID);
                     SDL_StopTextInput(window);
@@ -434,7 +392,6 @@ static void loop(void)
             break;
         case SDL_EVENT_KEYMAP_CHANGED:
             SDL_Log("Keymap changed!\n");
-            PrintKeymap();
             break;
         case SDL_EVENT_QUIT:
             done = 1;
@@ -548,7 +505,6 @@ int main(int argc, char *argv[])
 
     /* Print initial state */
     SDL_PumpEvents();
-    PrintKeymap();
     PrintModifierState();
 
     /* Watch keystrokes */
@@ -563,10 +519,12 @@ int main(int argc, char *argv[])
 #endif
 
 done:
-    for (i = 0; i < state->num_windows; ++i) {
-        SDLTest_TextWindowDestroy(windowstates[i].textwindow);
+    if (windowstates) {
+        for (i = 0; i < state->num_windows; ++i) {
+            SDLTest_TextWindowDestroy(windowstates[i].textwindow);
+        }
+        SDL_free(windowstates);
     }
-    SDL_free(windowstates);
     SDLTest_CleanupTextDrawing();
     SDLTest_CommonQuit(state);
     return 0;

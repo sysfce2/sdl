@@ -179,99 +179,12 @@ static int load_pipewire_syms(void)
     return 0;
 }
 
-/* When in a container, the library version can differ from the underlying core version,
- * so make sure the underlying Pipewire implementation meets the version requirement.
- */
-struct version_data
-{
-    struct pw_main_loop *loop;
-    int major, minor, patch;
-    int seq;
-};
-
-void version_check_core_info_callback(void *data, const struct pw_core_info *info)
-{
-    struct version_data *v = data;
-
-    if (SDL_sscanf(info->version, "%d.%d.%d", &v->major, &v->minor, &v->patch) < 3) {
-        v->major = 0;
-        v->minor = 0;
-        v->patch = 0;
-    }
-}
-
-void version_check_core_done_callback(void *data, uint32_t id, int seq)
-{
-    struct version_data *v = data;
-
-    if (id == PW_ID_CORE && v->seq == seq) {
-        PIPEWIRE_pw_main_loop_quit(v->loop);
-    }
-}
-
-static const struct pw_core_events version_check_core_events = { PW_VERSION_CORE_EVENTS, .info = version_check_core_info_callback, .done = version_check_core_done_callback };
-
-SDL_bool pipewire_core_version_at_least(int major, int minor, int patch)
-{
-    struct pw_main_loop *loop = NULL;
-    struct pw_context *context = NULL;
-    struct pw_core *core = NULL;
-    struct version_data version_data;
-    struct spa_hook core_listener;
-    SDL_bool ret = SDL_FALSE;
-
-    loop = PIPEWIRE_pw_main_loop_new(NULL);
-    if (!loop) {
-        goto done;
-    }
-
-    context = PIPEWIRE_pw_context_new(PIPEWIRE_pw_main_loop_get_loop(loop), NULL, 0);
-    if (!context) {
-        goto done;
-    }
-
-    core = PIPEWIRE_pw_context_connect(context, NULL, 0);
-    if (!core) {
-        goto done;
-    }
-
-    /* Attach a core listener and get the version. */
-    spa_zero(version_data);
-    version_data.loop = loop;
-    pw_core_add_listener(core, &core_listener, &version_check_core_events, &version_data);
-    version_data.seq = pw_core_sync(core, PW_ID_CORE, 0);
-
-    PIPEWIRE_pw_main_loop_run(loop);
-
-    spa_hook_remove(&core_listener);
-
-    ret = (version_data.major >= major) &&
-           (version_data.major > major || version_data.minor >= minor) &&
-           (version_data.major > major || version_data.minor > minor || version_data.patch >= patch);
-
-done:
-    if (core) {
-        PIPEWIRE_pw_core_disconnect(core);
-    }
-    if (context) {
-        PIPEWIRE_pw_context_destroy(context);
-    }
-    if (loop) {
-        PIPEWIRE_pw_main_loop_destroy(loop);
-    }
-
-    return ret;
-}
-
-static int init_pipewire_library(SDL_bool check_preferred_version)
+static int init_pipewire_library(void)
 {
     if (!load_pipewire_library()) {
         if (!load_pipewire_syms()) {
             PIPEWIRE_pw_init(NULL, NULL);
-
-            if (!check_preferred_version || pipewire_core_version_at_least(1, 0, 0)) {
-                return 0;
-            }
+            return 0;
         }
     }
 
@@ -335,8 +248,18 @@ static int hotplug_init_seq_val;
 static SDL_bool hotplug_init_complete;
 static SDL_bool hotplug_events_enabled;
 
+static int pipewire_version_major;
+static int pipewire_version_minor;
+static int pipewire_version_patch;
 static char *pipewire_default_sink_id = NULL;
 static char *pipewire_default_source_id = NULL;
+
+static SDL_bool pipewire_core_version_at_least(int major, int minor, int patch)
+{
+    return (pipewire_version_major >= major) &&
+           (pipewire_version_major > major || pipewire_version_minor >= minor) &&
+           (pipewire_version_major > major || pipewire_version_minor > minor || pipewire_version_patch >= patch);
+}
 
 // The active node list
 static SDL_bool io_list_check_add(struct io_node *node)
@@ -484,6 +407,15 @@ static void core_events_hotplug_init_callback(void *object, uint32_t id, int seq
     }
 }
 
+static void core_events_hotplug_info_callback(void *data, const struct pw_core_info *info)
+{
+    if (SDL_sscanf(info->version, "%d.%d.%d", &pipewire_version_major, &pipewire_version_minor, &pipewire_version_patch) < 3) {
+        pipewire_version_major = 0;
+        pipewire_version_minor = 0;
+        pipewire_version_patch = 0;
+    }
+}
+
 static void core_events_interface_callback(void *object, uint32_t id, int seq)
 {
     struct node_object *node = object;
@@ -511,7 +443,7 @@ static void core_events_metadata_callback(void *object, uint32_t id, int seq)
     }
 }
 
-static const struct pw_core_events hotplug_init_core_events = { PW_VERSION_CORE_EVENTS, .done = core_events_hotplug_init_callback };
+static const struct pw_core_events hotplug_init_core_events = { PW_VERSION_CORE_EVENTS, .info = core_events_hotplug_info_callback, .done = core_events_hotplug_init_callback };
 static const struct pw_core_events interface_core_events = { PW_VERSION_CORE_EVENTS, .done = core_events_interface_callback };
 static const struct pw_core_events metadata_core_events = { PW_VERSION_CORE_EVENTS, .done = core_events_metadata_callback };
 
@@ -1117,13 +1049,7 @@ static int PIPEWIRE_OpenDevice(SDL_AudioDevice *device)
     const int min_period = PW_MIN_SAMPLES * SPA_MAX(device->spec.freq / PW_BASE_CLOCK_RATE, 1);
 
     // Get the hints for the application name, icon name, stream name and role
-    app_name = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME);
-    if (!app_name || *app_name == '\0') {
-        app_name = SDL_GetHint(SDL_HINT_APP_NAME);
-        if (!app_name || *app_name == '\0') {
-            app_name = "SDL Application";
-        }
-    }
+    app_name = SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING);
 
     icon_name = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_APP_ICON_NAME);
     if (!icon_name || *icon_name == '\0') {
@@ -1131,7 +1057,7 @@ static int PIPEWIRE_OpenDevice(SDL_AudioDevice *device)
     }
 
     // App ID. Default to NULL if not available.
-    app_id = SDL_GetHint(SDL_HINT_APP_ID);
+    app_id = SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_IDENTIFIER_STRING);
 
     stream_name = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_STREAM_NAME);
     if (!stream_name || *stream_name == '\0') {
@@ -1292,11 +1218,11 @@ static void PIPEWIRE_Deinitialize(void)
     }
 }
 
-static SDL_bool PipewireInitialize(SDL_AudioDriverImpl *impl, SDL_bool check_preferred_version)
+static SDL_bool PipewireInitialize(SDL_AudioDriverImpl *impl)
 {
     if (!pipewire_initialized) {
 
-        if (init_pipewire_library(check_preferred_version) < 0) {
+        if (init_pipewire_library() < 0) {
             return SDL_FALSE;
         }
 
@@ -1326,7 +1252,7 @@ static SDL_bool PipewireInitialize(SDL_AudioDriverImpl *impl, SDL_bool check_pre
 
 static SDL_bool PIPEWIRE_PREFERRED_Init(SDL_AudioDriverImpl *impl)
 {
-    if (!PipewireInitialize(impl, SDL_TRUE)) {
+    if (!PipewireInitialize(impl)) {
         return SDL_FALSE;
     }
 
@@ -1342,7 +1268,8 @@ static SDL_bool PIPEWIRE_PREFERRED_Init(SDL_AudioDriverImpl *impl)
 
     PIPEWIRE_pw_thread_loop_unlock(hotplug_loop);
 
-    if (no_devices) {
+    if (no_devices || !pipewire_core_version_at_least(1, 0, 0)) {
+        hotplug_loop_destroy();
         PIPEWIRE_Deinitialize();
         return SDL_FALSE;
     }
@@ -1352,7 +1279,7 @@ static SDL_bool PIPEWIRE_PREFERRED_Init(SDL_AudioDriverImpl *impl)
 
 static SDL_bool PIPEWIRE_Init(SDL_AudioDriverImpl *impl)
 {
-    return PipewireInitialize(impl, SDL_FALSE);
+    return PipewireInitialize(impl);
 }
 
 AudioBootStrap PIPEWIRE_PREFERRED_bootstrap = {

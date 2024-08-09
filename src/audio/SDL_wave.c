@@ -1774,7 +1774,7 @@ static int WaveLoad(SDL_IOStream *src, WaveFile *file, SDL_AudioSpec *spec, Uint
     int result;
     Uint32 chunkcount = 0;
     Uint32 chunkcountlimit = 10000;
-    char *envchunkcountlimit;
+    const char *hint;
     Sint64 RIFFstart, RIFFend, lastchunkpos;
     SDL_bool RIFFlengthknown = SDL_FALSE;
     WaveFormat *format = &file->format;
@@ -1787,10 +1787,10 @@ static int WaveLoad(SDL_IOStream *src, WaveFile *file, SDL_AudioSpec *spec, Uint
     SDL_zero(fmtchunk);
     SDL_zero(datachunk);
 
-    envchunkcountlimit = SDL_getenv("SDL_WAVE_CHUNK_LIMIT");
-    if (envchunkcountlimit) {
+    hint = SDL_GetHint(SDL_HINT_WAVE_CHUNK_LIMIT);
+    if (hint) {
         unsigned int count;
-        if (SDL_sscanf(envchunkcountlimit, "%u", &count) == 1) {
+        if (SDL_sscanf(hint, "%u", &count) == 1) {
             chunkcountlimit = count <= SDL_MAX_UINT32 ? count : SDL_MAX_UINT32;
         }
     }
@@ -2080,6 +2080,16 @@ int SDL_LoadWAV_IO(SDL_IOStream *src, SDL_bool closeio, SDL_AudioSpec *spec, Uin
     int result = -1;
     WaveFile file;
 
+    if (spec) {
+        SDL_zerop(spec);
+    }
+    if (audio_buf) {
+        *audio_buf = NULL;
+    }
+    if (audio_len) {
+        *audio_len = 0;
+    }
+
     /* Make sure we are passed a valid data source */
     if (!src) {
         goto done;  /* Error may come from SDL_IOStream. */
@@ -2093,9 +2103,6 @@ int SDL_LoadWAV_IO(SDL_IOStream *src, SDL_bool closeio, SDL_AudioSpec *spec, Uin
         SDL_InvalidParamError("audio_len");
         goto done;
     }
-
-    *audio_buf = NULL;
-    *audio_len = 0;
 
     SDL_zero(file);
     file.riffhint = WaveGetRiffSizeHint();

@@ -51,7 +51,7 @@ static void SDL_DispatchMainCallbackEvent(SDL_Event *event)
     }
 }
 
-static void SDL_DispatchMainCallbackEvents()
+static void SDL_DispatchMainCallbackEvents(void)
 {
     SDL_Event events[16];
 
@@ -69,7 +69,7 @@ static void SDL_DispatchMainCallbackEvents()
     }
 }
 
-static int SDLCALL SDL_MainCallbackEventWatcher(void *userdata, SDL_Event *event)
+static SDL_bool SDLCALL SDL_MainCallbackEventWatcher(void *userdata, SDL_Event *event)
 {
     if (ShouldDispatchImmediately(event)) {
         // Make sure any currently queued events are processed then dispatch this before continuing
@@ -78,10 +78,10 @@ static int SDLCALL SDL_MainCallbackEventWatcher(void *userdata, SDL_Event *event
     } else {
         // We'll process this event later from the main event queue
     }
-    return 0;
+    return SDL_TRUE;
 }
 
-SDL_bool SDL_HasMainCallbacks()
+SDL_bool SDL_HasMainCallbacks(void)
 {
     if (SDL_main_iteration_callback) {
         return SDL_TRUE;

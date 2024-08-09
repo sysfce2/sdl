@@ -43,7 +43,9 @@
 #include <tpcshrd.h>
 #endif /* HAVE_TPCSHRD_H */
 
-/* #define WMMSG_DEBUG */
+#if 0
+#define WMMSG_DEBUG
+#endif
 #ifdef WMMSG_DEBUG
 #include <stdio.h>
 #include "wmmsg.h"
@@ -122,17 +124,12 @@ static Uint64 timestamp_offset;
 
 static void WIN_SetMessageTick(DWORD tick)
 {
-    if (message_tick) {
-        if (tick < message_tick && timestamp_offset) {
-            /* The tick counter rolled over, bump our offset */
-            timestamp_offset += SDL_MS_TO_NS(0x100000000LL);
-        }
-    }
     message_tick = tick;
 }
 
-static Uint64 WIN_GetEventTimestamp()
+static Uint64 WIN_GetEventTimestamp(void)
 {
+    const Uint64 TIMESTAMP_WRAP_OFFSET = SDL_MS_TO_NS(0x100000000LL);
     Uint64 timestamp, now;
 
     if (!SDL_processing_messages) {
@@ -142,13 +139,20 @@ static Uint64 WIN_GetEventTimestamp()
 
     now = SDL_GetTicksNS();
     timestamp = SDL_MS_TO_NS(message_tick);
-
-    if (!timestamp_offset) {
-        timestamp_offset = (now - timestamp);
-    }
     timestamp += timestamp_offset;
-
-    if (timestamp > now) {
+    if (!timestamp_offset) {
+        // Initializing timestamp offset
+        //SDL_Log("Initializing timestamp offset\n");
+        timestamp_offset = (now - timestamp);
+        timestamp = now;
+    } else if ((Sint64)(now - timestamp - TIMESTAMP_WRAP_OFFSET) >= 0) {
+        // The windows message tick wrapped
+        //SDL_Log("Adjusting timestamp offset for wrapping tick\n");
+        timestamp_offset += TIMESTAMP_WRAP_OFFSET;
+        timestamp += TIMESTAMP_WRAP_OFFSET;
+    } else if (timestamp > now) {
+        // We got a newer timestamp, but it can't be newer than now, so adjust our offset
+        //SDL_Log("Adjusting timestamp offset, %.2f ms newer\n", (double)(timestamp - now) / SDL_NS_PER_MS);
         timestamp_offset -= (timestamp - now);
         timestamp = now;
     }
@@ -292,7 +296,7 @@ static void WIN_CheckAsyncMouseRelease(Uint64 timestamp, SDL_WindowData *data)
 
 static void WIN_UpdateFocus(SDL_Window *window, SDL_bool expect_focus)
 {
-    SDL_WindowData *data = window->driverdata;
+    SDL_WindowData *data = window->internal;
     HWND hwnd = data->hwnd;
     SDL_bool had_focus = (SDL_GetKeyboardFocus() == window);
     SDL_bool has_focus = (GetForegroundWindow() == hwnd);
@@ -429,7 +433,7 @@ static SDL_WindowData *WIN_GetWindowDataFromHWND(HWND hwnd)
 
     if (_this) {
         for (window = _this->windows; window; window = window->next) {
-            SDL_WindowData *data = window->driverdata;
+            SDL_WindowData *data = window->internal;
             if (data && data->hwnd == hwnd) {
                 return data;
             }
@@ -443,7 +447,7 @@ LRESULT CALLBACK
 WIN_KeyboardHookProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
     KBDLLHOOKSTRUCT *hookData = (KBDLLHOOKSTRUCT *)lParam;
-    SDL_VideoData *data = SDL_GetVideoDevice()->driverdata;
+    SDL_VideoData *data = SDL_GetVideoDevice()->internal;
     SDL_Scancode scanCode;
 
     if (nCode < 0 || nCode != HC_ACTION) {
@@ -535,7 +539,7 @@ static void WIN_HandleRawMouseInput(Uint64 timestamp, SDL_VideoData *data, HANDL
     }
 
     SDL_MouseID mouseID = (SDL_MouseID)(uintptr_t)hDevice;
-    SDL_WindowData *windowdata = window->driverdata;
+    SDL_WindowData *windowdata = window->internal;
 
     if ((rawmouse->usFlags & 0x01) == MOUSE_MOVE_RELATIVE) {
         if (rawmouse->lLastX || rawmouse->lLastY) {
@@ -736,7 +740,7 @@ static void WIN_HandleRawKeyboardInput(Uint64 timestamp, SDL_VideoData *data, HA
 
 void WIN_PollRawInput(SDL_VideoDevice *_this)
 {
-    SDL_VideoData *data = _this->driverdata;
+    SDL_VideoData *data = _this->internal;
     UINT size, i, count, total = 0;
     RAWINPUT *input;
     Uint64 now;
@@ -781,25 +785,31 @@ void WIN_PollRawInput(SDL_VideoDevice *_this)
 
     now = SDL_GetTicksNS();
     if (total > 0) {
-        Uint64 timestamp, increment;
+        Uint64 mouse_timestamp, mouse_increment;
         Uint64 delta = (now - data->last_rawinput_poll);
-        if (total > 1 && delta <= SDL_MS_TO_NS(100)) {
+        UINT total_mouse = 0;
+        for (i = 0, input = (RAWINPUT *)data->rawinput; i < total; ++i, input = NEXTRAWINPUTBLOCK(input)) {
+            if (input->header.dwType == RIM_TYPEMOUSE) {
+                ++total_mouse;
+            }
+        }
+        if (total_mouse > 1 && delta <= SDL_MS_TO_NS(100)) {
             /* We'll spread these events over the time since the last poll */
-            timestamp = data->last_rawinput_poll;
-            increment = delta / total;
+            mouse_timestamp = data->last_rawinput_poll;
+            mouse_increment = delta / total_mouse;
         } else {
             /* Do we want to track the update rate per device? */
-            timestamp = now;
-            increment = 0;
+            mouse_timestamp = now;
+            mouse_increment = 0;
         }
         for (i = 0, input = (RAWINPUT *)data->rawinput; i < total; ++i, input = NEXTRAWINPUTBLOCK(input)) {
-            timestamp += increment;
             if (input->header.dwType == RIM_TYPEMOUSE) {
                 RAWMOUSE *rawmouse = (RAWMOUSE *)((BYTE *)input + data->rawinput_offset);
-                WIN_HandleRawMouseInput(timestamp, data, input->header.hDevice, rawmouse);
+                mouse_timestamp += mouse_increment;
+                WIN_HandleRawMouseInput(mouse_timestamp, data, input->header.hDevice, rawmouse);
             } else if (input->header.dwType == RIM_TYPEKEYBOARD) {
                 RAWKEYBOARD *rawkeyboard = (RAWKEYBOARD *)((BYTE *)input + data->rawinput_offset);
-                WIN_HandleRawKeyboardInput(timestamp, data, input->header.hDevice, rawkeyboard);
+                WIN_HandleRawKeyboardInput(now, data, input->header.hDevice, rawkeyboard);
             }
         }
     }
@@ -822,7 +832,7 @@ static void AddDeviceID(Uint32 deviceID, Uint32 **list, int *count)
     *list = new_list;
 }
 
-static SDL_bool HasDeviceID(Uint32 deviceID, Uint32 *list, int count)
+static SDL_bool HasDeviceID(Uint32 deviceID, const Uint32 *list, int count)
 {
     for (int i = 0; i < count; ++i) {
         if (deviceID == list[i]) {
@@ -1004,6 +1014,7 @@ static SDL_bool SkipAltGrLeftControl(WPARAM wParam, LPARAM lParam)
         return SDL_FALSE;
     }
 
+#if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
     // Here is a trick: "Alt Gr" sends LCTRL, then RALT. We only
     // want the RALT message, so we try to see if the next message
     // is a RALT message. In that case, this is a false LCTRL!
@@ -1018,6 +1029,8 @@ static SDL_bool SkipAltGrLeftControl(WPARAM wParam, LPARAM lParam)
             }
         }
     }
+#endif /* !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES) */
+
     return SDL_FALSE;
 }
 
@@ -1051,7 +1064,7 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 #endif /* WMMSG_DEBUG */
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
-    if (IME_HandleMessage(hwnd, msg, wParam, &lParam, data->videodata)) {
+    if (WIN_HandleIMEMessage(hwnd, msg, wParam, &lParam, data->videodata)) {
         return 0;
     }
 #endif
@@ -1237,12 +1250,11 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         SDL_bool virtual_key = SDL_FALSE;
         Uint16 rawcode = 0;
         SDL_Scancode code = WindowsScanCodeToSDLScanCode(lParam, wParam, &rawcode, &virtual_key);
-        const Uint8 *keyboardState = SDL_GetKeyboardState(NULL);
 
         /* Detect relevant keyboard shortcuts */
-        if (keyboardState[SDL_SCANCODE_LALT] == SDL_PRESSED || keyboardState[SDL_SCANCODE_RALT] == SDL_PRESSED) {
+        if (code == SDL_SCANCODE_F4 && (SDL_GetModState() & SDL_KMOD_ALT)) {
             /* ALT+F4: Close window */
-            if (code == SDL_SCANCODE_F4 && ShouldGenerateWindowCloseOnAltF4()) {
+            if (ShouldGenerateWindowCloseOnAltF4()) {
                 SDL_SendWindowEvent(data->window, SDL_EVENT_WINDOW_CLOSE_REQUESTED, 0, 0);
             }
         }
@@ -1285,9 +1297,9 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         } else {
             if (SDL_TextInputActive(data->window)) {
                 char text[5];
-                if (SDL_UCS4ToUTF8((Uint32)wParam, text) != text) {
-                    SDL_SendKeyboardText(text);
-                }
+                char *end = SDL_UCS4ToUTF8((Uint32)wParam, text);
+                *end = '\0';
+                SDL_SendKeyboardText(text);
             }
             returnCode = 0;
         }
@@ -2089,7 +2101,7 @@ LRESULT CALLBACK WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 #if !defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)
-static void WIN_UpdateClipCursorForWindows()
+static void WIN_UpdateClipCursorForWindows(void)
 {
     SDL_VideoDevice *_this = SDL_GetVideoDevice();
     SDL_Window *window;
@@ -2098,7 +2110,7 @@ static void WIN_UpdateClipCursorForWindows()
 
     if (_this) {
         for (window = _this->windows; window; window = window->next) {
-            SDL_WindowData *data = window->driverdata;
+            SDL_WindowData *data = window->internal;
             if (data) {
                 if (data->skip_update_clipcursor) {
                     data->skip_update_clipcursor = SDL_FALSE;
@@ -2111,12 +2123,12 @@ static void WIN_UpdateClipCursorForWindows()
     }
 }
 
-static void WIN_UpdateMouseCapture()
+static void WIN_UpdateMouseCapture(void)
 {
     SDL_Window *focusWindow = SDL_GetKeyboardFocus();
 
     if (focusWindow && (focusWindow->flags & SDL_WINDOW_MOUSE_CAPTURE)) {
-        SDL_WindowData *data = focusWindow->driverdata;
+        SDL_WindowData *data = focusWindow->internal;
 
         if (!data->mouse_tracked) {
             POINT cursorPos;
@@ -2200,7 +2212,7 @@ int WIN_WaitEventTimeout(SDL_VideoDevice *_this, Sint64 timeoutNS)
 
 void WIN_SendWakeupEvent(SDL_VideoDevice *_this, SDL_Window *window)
 {
-    SDL_WindowData *data = window->driverdata;
+    SDL_WindowData *data = window->internal;
     PostMessage(data->hwnd, data->videodata->_SDL_WAKEUP, 0, 0);
 }
 
@@ -2220,6 +2232,10 @@ void WIN_PumpEvents(SDL_VideoDevice *_this)
     const Uint8 *keystate;
     SDL_Window *focusWindow;
 #endif
+
+    if (_this->internal->gameinput_context) {
+        WIN_UpdateGameInput(_this);
+    }
 
     if (g_WindowsEnableMessageLoop) {
         SDL_processing_messages = SDL_TRUE;
@@ -2298,7 +2314,11 @@ void WIN_PumpEvents(SDL_VideoDevice *_this)
     /* Update mouse capture */
     WIN_UpdateMouseCapture();
 
-    WIN_CheckKeyboardAndMouseHotplug(_this, SDL_FALSE);
+    if (!_this->internal->gameinput_context) {
+        WIN_CheckKeyboardAndMouseHotplug(_this, SDL_FALSE);
+    }
+
+    WIN_UpdateIMECandidates(_this);
 
 #endif /*!defined(SDL_PLATFORM_XBOXONE) && !defined(SDL_PLATFORM_XBOXSERIES)*/
 
@@ -2405,7 +2425,7 @@ int SDL_RegisterApp(const char *name, Uint32 style, void *hInst)
 }
 
 /* Unregisters the windowclass registered in SDL_RegisterApp above. */
-void SDL_UnregisterApp()
+void SDL_UnregisterApp(void)
 {
     WNDCLASSEX wcex;
 

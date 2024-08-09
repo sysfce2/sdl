@@ -227,24 +227,26 @@ static void loop(void *arg)
         case SDL_EVENT_KEY_DOWN:
             switch (event.key.key) {
             case SDLK_L:
-                num_lines = 0;
-                break;
-            case SDLK_l:
-                add_line(
-                    (float)SDL_rand(640),
-                    (float)SDL_rand(480),
-                    (float)SDL_rand(640),
-                    (float)SDL_rand(480));
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    num_lines = 0;
+                } else {
+                    add_line(
+                        (float)SDL_rand(640),
+                        (float)SDL_rand(480),
+                        (float)SDL_rand(640),
+                        (float)SDL_rand(480));
+                }
                 break;
             case SDLK_R:
-                num_rects = 0;
-                break;
-            case SDLK_r:
-                add_rect(
-                    (float)SDL_rand(640),
-                    (float)SDL_rand(480),
-                    (float)SDL_rand(640),
-                    (float)SDL_rand(480));
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    num_rects = 0;
+                } else {
+                    add_rect(
+                        (float)SDL_rand(640),
+                        (float)SDL_rand(480),
+                        (float)SDL_rand(640),
+                        (float)SDL_rand(480));
+                }
                 break;
             default:
                 break;
@@ -310,8 +312,14 @@ int main(int argc, char *argv[])
                     } else if (SDL_strcasecmp(argv[i + 1], "blend") == 0) {
                         blendMode = SDL_BLENDMODE_BLEND;
                         consumed = 2;
+                    } else if (SDL_strcasecmp(argv[i + 1], "blend_premultiplied") == 0) {
+                        blendMode = SDL_BLENDMODE_BLEND_PREMULTIPLIED;
+                        consumed = 2;
                     } else if (SDL_strcasecmp(argv[i + 1], "add") == 0) {
                         blendMode = SDL_BLENDMODE_ADD;
+                        consumed = 2;
+                    } else if (SDL_strcasecmp(argv[i + 1], "add_premultiplied") == 0) {
+                        blendMode = SDL_BLENDMODE_ADD_PREMULTIPLIED;
                         consumed = 2;
                     } else if (SDL_strcasecmp(argv[i + 1], "mod") == 0) {
                         blendMode = SDL_BLENDMODE_MOD;
@@ -336,7 +344,7 @@ int main(int argc, char *argv[])
             }
         }
         if (consumed < 0) {
-            static const char *options[] = { "[--blend none|blend|add|mod|mul]", "[--cyclecolor]", "[--cyclealpha]", "[count]", NULL };
+            static const char *options[] = { "[--blend none|blend|blend_premultiplied|add|add_premultiplied|mod|mul]", "[--cyclecolor]", "[--cyclealpha]", "[count]", NULL };
             SDLTest_CommonLogUsage(state, argv[0], options);
             return 1;
         }

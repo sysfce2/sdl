@@ -351,7 +351,6 @@ static void RefreshControllerName(void)
         }
     }
 
-    SDL_free(controller_name);
     if (name) {
         controller_name = SDL_strdup(name);
     } else {
@@ -683,12 +682,12 @@ static void PasteMapping(void)
         char *mapping = SDL_GetClipboardText();
         if (MappingHasBindings(mapping)) {
             StopBinding();
-            SetAndFreeGamepadMapping(mapping);
+            SDL_SetGamepadMapping(controller->id, mapping);
             RefreshControllerName();
         } else {
             /* Not a valid mapping, ignore it */
-            SDL_free(mapping);
         }
+        SDL_free(mapping);
     }
 }
 
@@ -921,7 +920,7 @@ static void AddController(SDL_JoystickID id, SDL_bool verbose)
             const char *path = SDL_GetJoystickPath(joystick);
             char guid[33];
             SDL_Log("Opened joystick %s%s%s\n", name, path ? ", " : "", path ? path : "");
-            SDL_GetJoystickGUIDString(SDL_GetJoystickGUID(joystick), guid, sizeof(guid));
+            SDL_GUIDToString(SDL_GetJoystickGUID(joystick), guid, sizeof(guid));
             SDL_Log("No gamepad mapping for %s\n", guid);
         }
     } else {
@@ -1371,7 +1370,7 @@ static void DrawGamepadInfo(SDL_Renderer *renderer)
     }
 
     if (controller->joystick) {
-        SDL_snprintf(text, sizeof(text), "(%" SDL_PRIu32 ")", SDL_GetJoystickInstanceID(controller->joystick));
+        SDL_snprintf(text, sizeof(text), "(%" SDL_PRIu32 ")", SDL_GetJoystickID(controller->joystick));
         x = SCREEN_WIDTH - (FONT_CHARACTER_SIZE * SDL_strlen(text)) - 8.0f;
         y = 8.0f;
         SDLTest_DrawString(renderer, x, y, text);
@@ -1853,30 +1852,30 @@ static void loop(void *arg)
                         SDL_SetGamepadPlayerIndex(controller->gamepad, player_index);
                     }
                     break;
-                } else if (event.key.key == SDLK_a) {
+                } else if (event.key.key == SDLK_A) {
                     OpenVirtualGamepad();
-                } else if (event.key.key == SDLK_d) {
+                } else if (event.key.key == SDLK_D) {
                     CloseVirtualGamepad();
-                } else if (event.key.key == SDLK_r && (event.key.mod & SDL_KMOD_CTRL)) {
+                } else if (event.key.key == SDLK_R && (event.key.mod & SDL_KMOD_CTRL)) {
                     SDL_ReloadGamepadMappings();
                 } else if (event.key.key == SDLK_ESCAPE) {
                     done = SDL_TRUE;
                 }
             } else if (display_mode == CONTROLLER_MODE_BINDING) {
-                if (event.key.key == SDLK_c && (event.key.mod & SDL_KMOD_CTRL)) {
+                if (event.key.key == SDLK_C && (event.key.mod & SDL_KMOD_CTRL)) {
                     if (binding_element == SDL_GAMEPAD_ELEMENT_NAME) {
                         CopyControllerName();
                     } else {
                         CopyMapping();
                     }
-                } else if (event.key.key == SDLK_v && (event.key.mod & SDL_KMOD_CTRL)) {
+                } else if (event.key.key == SDLK_V && (event.key.mod & SDL_KMOD_CTRL)) {
                     if (binding_element == SDL_GAMEPAD_ELEMENT_NAME) {
                         ClearControllerName();
                         PasteControllerName();
                     } else {
                         PasteMapping();
                     }
-                } else if (event.key.key == SDLK_x && (event.key.mod & SDL_KMOD_CTRL)) {
+                } else if (event.key.key == SDLK_X && (event.key.mod & SDL_KMOD_CTRL)) {
                     if (binding_element == SDL_GAMEPAD_ELEMENT_NAME) {
                         CopyControllerName();
                         ClearControllerName();

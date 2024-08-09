@@ -43,7 +43,7 @@ static void loop(void)
 #endif
 
 static void
-test_multi_audio(SDL_AudioDeviceID *devices, int devcount)
+test_multi_audio(const SDL_AudioDeviceID *devices, int devcount)
 {
     int keep_going = 1;
     SDL_AudioStream **streams = NULL;
@@ -135,7 +135,7 @@ test_multi_audio(SDL_AudioDeviceID *devices, int devcount)
 
 int main(int argc, char **argv)
 {
-    SDL_AudioDeviceID *devices = NULL;
+    SDL_AudioDeviceID *devices;
     int devcount = 0;
     int i;
     char *filename = NULL;
@@ -192,9 +192,9 @@ int main(int argc, char **argv)
             test_multi_audio(devices, devcount);
             SDL_free(sound);
         }
+        SDL_free(devices);
     }
 
-    SDL_free(devices);
     SDL_free(filename);
 
     SDL_Quit();

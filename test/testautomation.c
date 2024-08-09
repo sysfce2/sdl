@@ -49,6 +49,7 @@ static SDLTest_TestSuiteReference *testSuites[] = {
     &timeTestSuite,
     &timerTestSuite,
     &videoTestSuite,
+    &blitTestSuite,
     &subsystemsTestSuite, /* run last, not interfere with other test environment */
     NULL
 };
@@ -74,6 +75,7 @@ int main(int argc, char *argv[])
     int i, done;
     SDL_Event event;
     int list = 0;
+    SDL_bool randomOrder = SDL_FALSE;
 
     /* Initialize test framework */
     state = SDLTest_CommonCreateState(argv, SDL_INIT_VIDEO | SDL_INIT_AUDIO);
@@ -117,10 +119,21 @@ int main(int argc, char *argv[])
             } else if (SDL_strcasecmp(argv[i], "--list") == 0) {
                 consumed = 1;
                 list = 1;
+            } else if (SDL_strcasecmp(argv[i], "--random-order") == 0) {
+                consumed = 1;
+                randomOrder = SDL_TRUE;
             }
+
         }
         if (consumed < 0) {
-            static const char *options[] = { "[--iterations #]", "[--execKey #]", "[--seed string]", "[--filter suite_name|test_name]", "[--list]", NULL };
+            static const char *options[] = {
+                "[--iterations #]",
+                "[--execKey #]",
+                "[--seed string]",
+                "[--filter suite_name|test_name]",
+                "[--list]",
+                "[--random-order]",
+                NULL };
             SDLTest_CommonLogUsage(state, argv[0], options);
             quit(1);
         }
@@ -156,7 +169,7 @@ int main(int argc, char *argv[])
     }
 
     /* Call Harness */
-    result = SDLTest_RunSuites(testSuites, userRunSeed, userExecKey, filter, testIterations);
+    result = SDLTest_RunSuites(testSuites, userRunSeed, userExecKey, filter, testIterations, randomOrder);
 
     /* Empty event queue */
     done = 0;

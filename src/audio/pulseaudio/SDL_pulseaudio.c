@@ -264,34 +264,9 @@ static int load_pulseaudio_syms(void)
     return 0;
 }
 
-static SDL_INLINE int squashVersion(const int major, const int minor, const int patch)
-{
-    return ((major & 0xFF) << 16) | ((minor & 0xFF) << 8) | (patch & 0xFF);
-}
-
-// Workaround for older pulse: pa_context_new() must have non-NULL appname
 static const char *getAppName(void)
 {
-    const char *retval = SDL_GetHint(SDL_HINT_AUDIO_DEVICE_APP_NAME);
-    if (retval && *retval) {
-        return retval;
-    }
-    retval = SDL_GetHint(SDL_HINT_APP_NAME);
-    if (retval && *retval) {
-        return retval;
-    } else {
-        const char *verstr = PULSEAUDIO_pa_get_library_version();
-        retval = "SDL Application"; // the "oh well" default.
-        if (verstr) {
-            int maj, min, patch;
-            if (SDL_sscanf(verstr, "%d.%d.%d", &maj, &min, &patch) == 3) {
-                if (squashVersion(maj, min, patch) >= squashVersion(0, 9, 15)) {
-                    retval = NULL; // 0.9.15+ handles NULL correctly.
-                }
-            }
-        }
-    }
-    return retval;
+    return SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING);
 }
 
 static void OperationStateChangeCallback(pa_operation *o, void *userdata)
@@ -789,6 +764,7 @@ static SDL_AudioFormat PulseFormatToSDLFormat(pa_sample_format_t format)
 static void AddPulseAudioDevice(const SDL_bool recording, const char *description, const char *name, const uint32_t index, const pa_sample_spec *sample_spec)
 {
     SDL_AudioSpec spec;
+    SDL_zero(spec);
     spec.format = PulseFormatToSDLFormat(sample_spec->format);
     spec.channels = sample_spec->channels;
     spec.freq = sample_spec->rate;
@@ -920,7 +896,7 @@ static int SDLCALL HotplugThread(void *data)
     // don't WaitForPulseOperation on the subscription; when it's done we'll be able to get hotplug events, but waiting doesn't changing anything.
     op = PULSEAUDIO_pa_context_subscribe(pulseaudio_context, PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE | PA_SUBSCRIPTION_MASK_SERVER, NULL, NULL);
 
-    SDL_PostSemaphore((SDL_Semaphore *) data);
+    SDL_SignalSemaphore((SDL_Semaphore *) data);
 
     while (SDL_AtomicGet(&pulseaudio_hotplug_thread_active)) {
         PULSEAUDIO_pa_threaded_mainloop_wait(pulseaudio_threaded_mainloop);

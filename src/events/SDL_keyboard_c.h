@@ -54,13 +54,10 @@ extern int SDL_SetKeyboardFocus(SDL_Window *window);
  */
 extern int SDL_SendKeyboardUnicodeKey(Uint64 timestamp, Uint32 ch);
 
-/* Send a key from a virtual key source, like an on-screen keyboard */
-extern int SDL_SendVirtualKeyboardKey(Uint64 timestamp, Uint8 state, SDL_Scancode scancode);
-
 /* Send a keyboard key event */
 extern int SDL_SendKeyboardKey(Uint64 timestamp, SDL_KeyboardID keyboardID, int rawcode, SDL_Scancode scancode, Uint8 state);
-extern int SDL_SendKeyboardKeyAutoRelease(Uint64 timestamp, SDL_Scancode scancode);
 extern int SDL_SendKeyboardKeyIgnoreModifiers(Uint64 timestamp, SDL_KeyboardID keyboardID, int rawcode, SDL_Scancode scancode, Uint8 state);
+extern int SDL_SendKeyboardKeyAutoRelease(Uint64 timestamp, SDL_Scancode scancode);
 
 /* This is for platforms that don't know the keymap but can report scancode and keycode directly.
    Most platforms should prefer to optionally call SDL_SetKeymap and then use SDL_SendKeyboardKey. */
@@ -77,6 +74,9 @@ extern int SDL_SendKeyboardText(const char *text);
 
 /* Send editing text for selected range from start to end */
 extern int SDL_SendEditingText(const char *text, int start, int length);
+
+/* Send editing text candidates, which will be copied into the event */
+int SDL_SendEditingTextCandidates(char **candidates, int num_candidates, int selected_candidate, SDL_bool horizontal);
 
 /* Shutdown the keyboard subsystem */
 extern void SDL_QuitKeyboard(void);

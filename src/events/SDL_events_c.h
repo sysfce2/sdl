@@ -40,12 +40,15 @@ extern int SDL_StartEventLoop(void);
 extern void SDL_StopEventLoop(void);
 extern void SDL_QuitInterrupt(void);
 
-extern const char *SDL_AllocateEventString(const char *string);
-
 extern int SDL_SendAppEvent(SDL_EventType eventType);
 extern int SDL_SendKeymapChangedEvent(void);
 extern int SDL_SendLocaleChangedEvent(void);
 extern int SDL_SendSystemThemeChangedEvent(void);
+
+extern void *SDL_AllocateTemporaryMemory(size_t size);
+extern const char *SDL_CreateTemporaryString(const char *string);
+extern void *SDL_ClaimTemporaryMemory(const void *mem);
+extern void SDL_FreeTemporaryMemory(void);
 
 extern int SDL_SendQuit(void);
 

@@ -49,7 +49,7 @@ int Android_Vulkan_LoadLibrary(SDL_VideoDevice *_this, const char *path)
 
     /* Load the Vulkan loader library */
     if (!path) {
-        path = SDL_getenv("SDL_VULKAN_LIBRARY");
+        path = SDL_GetHint(SDL_HINT_VULKAN_LIBRARY);
     }
     if (!path) {
         path = "libvulkan.so";
@@ -128,7 +128,7 @@ int Android_Vulkan_CreateSurface(SDL_VideoDevice *_this,
                                  const struct VkAllocationCallbacks *allocator,
                                  VkSurfaceKHR *surface)
 {
-    SDL_WindowData *windowData = window->driverdata;
+    SDL_WindowData *windowData = window->internal;
     PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr =
         (PFN_vkGetInstanceProcAddr)_this->vulkan_config.vkGetInstanceProcAddr;
     PFN_vkCreateAndroidSurfaceKHR vkCreateAndroidSurfaceKHR =

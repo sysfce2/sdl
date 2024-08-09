@@ -88,7 +88,7 @@ void WINRT_ProcessCharacterReceivedEvent(SDL_Window *window, Windows::UI::Core::
         return;
     }
 
-    SDL_WindowData *data = window->driverdata;
+    SDL_WindowData *data = window->internal;
 
     if (SDL_TextInputActive(window)) {
         /* Characters outside Unicode Basic Multilingual Plane (BMP)
@@ -148,7 +148,7 @@ SDL_bool WINRT_HasScreenKeyboardSupport(SDL_VideoDevice *_this)
     return SDL_TRUE;
 }
 
-void WINRT_ShowScreenKeyboard(SDL_VideoDevice *_this, SDL_Window *window)
+void WINRT_ShowScreenKeyboard(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID props)
 {
     using namespace Windows::UI::ViewManagement;
     InputPane ^ inputPane = InputPane::GetForCurrentView();
@@ -171,7 +171,7 @@ SDL_bool WINRT_IsScreenKeyboardShown(SDL_VideoDevice *_this, SDL_Window *window)
     using namespace Windows::UI::ViewManagement;
     InputPane ^ inputPane = InputPane::GetForCurrentView();
     if (inputPane) {
-        switch (SDL_WinRTGetDeviceFamily()) {
+        switch (SDL_GetWinRTDeviceFamily()) {
         case SDL_WINRT_DEVICEFAMILY_XBOX:
             // Documentation recommends using inputPane->Visible
             // https://learn.microsoft.com/en-us/uwp/api/windows.ui.viewmanagement.inputpane.visible?view=winrt-22621

@@ -92,15 +92,15 @@ SDL_HapticID *SDL_GetHaptics(int *count)
     return haptics;
 }
 
-const char *SDL_GetHapticInstanceName(SDL_HapticID instance_id)
+const char *SDL_GetHapticNameForID(SDL_HapticID instance_id)
 {
     int device_index;
     const char *name = NULL;
 
     if (SDL_GetHapticIndex(instance_id, &device_index)) {
-        name = SDL_SYS_HapticName(device_index);
+        name = SDL_GetPersistentString(SDL_SYS_HapticName(device_index));
     }
-    return name ? SDL_FreeLater(SDL_strdup(name)) : NULL;
+    return name;
 }
 
 SDL_Haptic *SDL_OpenHaptic(SDL_HapticID instance_id)
@@ -166,7 +166,7 @@ SDL_Haptic *SDL_OpenHaptic(SDL_HapticID instance_id)
     return haptic;
 }
 
-SDL_Haptic *SDL_GetHapticFromInstanceID(SDL_HapticID instance_id)
+SDL_Haptic *SDL_GetHapticFromID(SDL_HapticID instance_id)
 {
     SDL_Haptic *haptic;
 
@@ -178,7 +178,7 @@ SDL_Haptic *SDL_GetHapticFromInstanceID(SDL_HapticID instance_id)
     return haptic;
 }
 
-SDL_HapticID SDL_GetHapticInstanceID(SDL_Haptic *haptic)
+SDL_HapticID SDL_GetHapticID(SDL_Haptic *haptic)
 {
     CHECK_HAPTIC_MAGIC(haptic, 0);
 
@@ -187,9 +187,9 @@ SDL_HapticID SDL_GetHapticInstanceID(SDL_Haptic *haptic)
 
 const char *SDL_GetHapticName(SDL_Haptic *haptic)
 {
-    CHECK_HAPTIC_MAGIC(haptic, 0);
+    CHECK_HAPTIC_MAGIC(haptic, NULL);
 
-    return haptic->name;
+    return SDL_GetPersistentString(haptic->name);
 }
 
 SDL_bool SDL_IsMouseHaptic(void)
@@ -222,7 +222,7 @@ SDL_bool SDL_IsJoystickHaptic(SDL_Joystick *joystick)
     {
         /* Must be a valid joystick */
         if (SDL_IsJoystickValid(joystick) &&
-            !SDL_IsGamepad(SDL_GetJoystickInstanceID(joystick))) {
+            !SDL_IsGamepad(SDL_GetJoystickID(joystick))) {
             result = SDL_SYS_JoystickIsHaptic(joystick);
         }
     }
@@ -246,7 +246,7 @@ SDL_Haptic *SDL_OpenHapticFromJoystick(SDL_Joystick *joystick)
         }
 
         /* Joystick must be haptic */
-        if (SDL_IsGamepad(SDL_GetJoystickInstanceID(joystick)) ||
+        if (SDL_IsGamepad(SDL_GetJoystickID(joystick)) ||
             SDL_SYS_JoystickIsHaptic(joystick) <= 0) {
             SDL_SetError("Haptic: Joystick isn't a haptic device.");
             SDL_UnlockJoysticks();
@@ -336,7 +336,7 @@ void SDL_CloseHaptic(SDL_Haptic *haptic)
     }
 
     /* Free the data associated with this device */
-    SDL_FreeLater(haptic->name);  // this pointer is handed to the app in SDL_GetHapticName()
+    SDL_free(haptic->name);
     SDL_free(haptic);
 }
 
@@ -539,7 +539,7 @@ int SDL_SetHapticGain(SDL_Haptic *haptic, int gain)
         return SDL_SetError("Haptic: Gain must be between 0 and 100.");
     }
 
-    /* We use the envvar to get the maximum gain. */
+    /* The user can use an environment variable to override the max gain. */
     env = SDL_getenv("SDL_HAPTIC_GAIN_MAX");
     if (env) {
         max_gain = SDL_atoi(env);

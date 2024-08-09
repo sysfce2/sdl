@@ -30,17 +30,17 @@
 static SwkbdState sw_keyboard;
 const static size_t BUFFER_SIZE = 256;
 
-void N3DS_SwkbInit()
+void N3DS_SwkbInit(void)
 {
     swkbdInit(&sw_keyboard, SWKBD_TYPE_NORMAL, 2, -1);
 }
 
-void N3DS_SwkbPoll()
+void N3DS_SwkbPoll(void)
 {
     return;
 }
 
-void N3DS_SwkbQuit()
+void N3DS_SwkbQuit(void)
 {
     return;
 }
@@ -50,7 +50,7 @@ SDL_bool N3DS_HasScreenKeyboardSupport(SDL_VideoDevice *_this)
     return SDL_TRUE;
 }
 
-int N3DS_StartTextInput(SDL_VideoDevice *_this, SDL_Window *window)
+int N3DS_StartTextInput(SDL_VideoDevice *_this, SDL_Window *window, SDL_PropertiesID props)
 {
     char buffer[BUFFER_SIZE];
     SwkbdButton button_pressed;

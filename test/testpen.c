@@ -232,7 +232,7 @@ static void dump_state(void)
         char *type;
         char *buttons_str;
 
-        SDL_GUIDToString(guid, guid_str, 33);
+        SDL_GUIDToString(guid, guid_str, sizeof(guid_str));
 
         switch (SDL_GetPenType(penid)) {
         case SDL_PEN_TYPE_ERASER:

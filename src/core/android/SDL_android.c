@@ -64,6 +64,12 @@ JNIEXPORT jstring JNICALL SDL_JAVA_INTERFACE(nativeGetVersion)(
 JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeSetupJNI)(
     JNIEnv *env, jclass cls);
 
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeInitMainThread)(
+    JNIEnv *env, jclass cls);
+
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeCleanupMainThread)(
+    JNIEnv *env, jclass cls);
+
 JNIEXPORT int JNICALL SDL_JAVA_INTERFACE(nativeRunMain)(
     JNIEnv *env, jclass cls,
     jstring library, jstring function, jobject array);
@@ -163,6 +169,10 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeRotationChanged)(
     JNIEnv *env, jclass cls,
     jint rotation);
 
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeInsetsChanged)(
+    JNIEnv *env, jclass cls,
+    jint left, jint right, jint top, jint bottom);
+
 JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeAddTouch)(
     JNIEnv *env, jclass cls,
     jint touchId, jstring name);
@@ -184,6 +194,8 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeFileDialog)(
 static JNINativeMethod SDLActivity_tab[] = {
     { "nativeGetVersion", "()Ljava/lang/String;", SDL_JAVA_INTERFACE(nativeGetVersion) },
     { "nativeSetupJNI", "()I", SDL_JAVA_INTERFACE(nativeSetupJNI) },
+    { "nativeInitMainThread", "()V", SDL_JAVA_INTERFACE(nativeInitMainThread) },
+    { "nativeCleanupMainThread", "()V", SDL_JAVA_INTERFACE(nativeCleanupMainThread) },
     { "nativeRunMain", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/Object;)I", SDL_JAVA_INTERFACE(nativeRunMain) },
     { "onNativeDropFile", "(Ljava/lang/String;)V", SDL_JAVA_INTERFACE(onNativeDropFile) },
     { "nativeSetScreenResolution", "(IIIIFF)V", SDL_JAVA_INTERFACE(nativeSetScreenResolution) },
@@ -212,6 +224,7 @@ static JNINativeMethod SDLActivity_tab[] = {
     { "nativeSetenv", "(Ljava/lang/String;Ljava/lang/String;)V", SDL_JAVA_INTERFACE(nativeSetenv) },
     { "nativeSetNaturalOrientation", "(I)V", SDL_JAVA_INTERFACE(nativeSetNaturalOrientation) },
     { "onNativeRotationChanged", "(I)V", SDL_JAVA_INTERFACE(onNativeRotationChanged) },
+    { "onNativeInsetsChanged", "(IIII)V", SDL_JAVA_INTERFACE(onNativeInsetsChanged) },
     { "nativeAddTouch", "(ILjava/lang/String;)V", SDL_JAVA_INTERFACE(nativeAddTouch) },
     { "nativePermissionResult", "(IZ)V", SDL_JAVA_INTERFACE(nativePermissionResult) },
     { "nativeAllowRecreateActivity", "()Z", SDL_JAVA_INTERFACE(nativeAllowRecreateActivity) },
@@ -359,16 +372,6 @@ static jclass mAudioManagerClass;
 /* method signatures */
 static jmethodID midRegisterAudioDeviceCallback;
 static jmethodID midUnregisterAudioDeviceCallback;
-static jmethodID midAudioOpen;
-static jmethodID midAudioWriteByteBuffer;
-static jmethodID midAudioWriteShortBuffer;
-static jmethodID midAudioWriteFloatBuffer;
-static jmethodID midAudioClose;
-static jmethodID midRecordingOpen;
-static jmethodID midRecordingReadByteBuffer;
-static jmethodID midRecordingReadShortBuffer;
-static jmethodID midRecordingReadFloatBuffer;
-static jmethodID midRecordingClose;
 static jmethodID midAudioSetThreadPriority;
 
 /* controller manager */
@@ -397,6 +400,12 @@ static jobject javaAssetManagerRef = 0;
 
 /* Re-create activity hint */
 static SDL_AtomicInt bAllowRecreateActivity;
+
+static SDL_Mutex *Android_ActivityMutex = NULL;
+static SDL_Mutex *Android_LifecycleMutex = NULL;
+static SDL_Semaphore *Android_LifecycleEventSem = NULL;
+static SDL_AndroidLifecycleEvent Android_LifecycleEvents[SDL_NUM_ANDROID_LIFECYCLE_EVENTS];
+static int Android_NumLifecycleEvents;
 
 /*******************************************************************************
                  Functions called by JNI
@@ -605,14 +614,14 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeSetupJNI)(JNIEnv *env, jclass cl
         __android_log_print(ANDROID_LOG_ERROR, "SDL", "failed to create Android_ActivityMutex mutex");
     }
 
-    Android_PauseSem = SDL_CreateSemaphore(0);
-    if (!Android_PauseSem) {
-        __android_log_print(ANDROID_LOG_ERROR, "SDL", "failed to create Android_PauseSem semaphore");
+    Android_LifecycleMutex = SDL_CreateMutex();
+    if (!Android_LifecycleMutex) {
+        __android_log_print(ANDROID_LOG_ERROR, "SDL", "failed to create Android_LifecycleMutex mutex");
     }
 
-    Android_ResumeSem = SDL_CreateSemaphore(0);
-    if (!Android_ResumeSem) {
-        __android_log_print(ANDROID_LOG_ERROR, "SDL", "failed to create Android_ResumeSem semaphore");
+    Android_LifecycleEventSem = SDL_CreateSemaphore(0);
+    if (!Android_LifecycleEventSem) {
+        __android_log_print(ANDROID_LOG_ERROR, "SDL", "failed to create Android_LifecycleEventSem semaphore");
     }
 
     mActivityClass = (jclass)((*env)->NewGlobalRef(env, cls));
@@ -644,7 +653,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeSetupJNI)(JNIEnv *env, jclass cl
     midSetSystemCursor = (*env)->GetStaticMethodID(env, mActivityClass, "setSystemCursor", "(I)Z");
     midSetWindowStyle = (*env)->GetStaticMethodID(env, mActivityClass, "setWindowStyle", "(Z)V");
     midShouldMinimizeOnFocusLoss = (*env)->GetStaticMethodID(env, mActivityClass, "shouldMinimizeOnFocusLoss", "()Z");
-    midShowTextInput = (*env)->GetStaticMethodID(env, mActivityClass, "showTextInput", "(IIII)Z");
+    midShowTextInput = (*env)->GetStaticMethodID(env, mActivityClass, "showTextInput", "(IIIII)Z");
     midSupportsRelativeMouse = (*env)->GetStaticMethodID(env, mActivityClass, "supportsRelativeMouse", "()Z");
     midOpenFileDescriptor = (*env)->GetStaticMethodID(env, mActivityClass, "openFileDescriptor", "(Ljava/lang/String;Ljava/lang/String;)I");
     midShowFileDialog = (*env)->GetStaticMethodID(env, mActivityClass, "showFileDialog", "([Ljava/lang/String;ZZI)Z");
@@ -699,34 +708,10 @@ JNIEXPORT void JNICALL SDL_JAVA_AUDIO_INTERFACE(nativeSetupJNI)(JNIEnv *env, jcl
     midUnregisterAudioDeviceCallback = (*env)->GetStaticMethodID(env, mAudioManagerClass,
                                                          "unregisterAudioDeviceCallback",
                                                          "()V");
-    midAudioOpen = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                             "audioOpen", "(IIIII)[I");
-    midAudioWriteByteBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                        "audioWriteByteBuffer", "([B)V");
-    midAudioWriteShortBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                         "audioWriteShortBuffer", "([S)V");
-    midAudioWriteFloatBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                         "audioWriteFloatBuffer", "([F)V");
-    midAudioClose = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                              "audioClose", "()V");
-    midRecordingOpen = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                               "recordingOpen", "(IIIII)[I");
-    midRecordingReadByteBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                         "recordingReadByteBuffer", "([BZ)I");
-    midRecordingReadShortBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                          "recordingReadShortBuffer", "([SZ)I");
-    midRecordingReadFloatBuffer = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                          "recordingReadFloatBuffer", "([FZ)I");
-    midRecordingClose = (*env)->GetStaticMethodID(env, mAudioManagerClass,
-                                                "recordingClose", "()V");
     midAudioSetThreadPriority = (*env)->GetStaticMethodID(env, mAudioManagerClass,
                                                           "audioSetThreadPriority", "(ZI)V");
 
-    if (!midRegisterAudioDeviceCallback || !midUnregisterAudioDeviceCallback || !midAudioOpen ||
-        !midAudioWriteByteBuffer || !midAudioWriteShortBuffer || !midAudioWriteFloatBuffer ||
-        !midAudioClose ||
-        !midRecordingOpen || !midRecordingReadByteBuffer || !midRecordingReadShortBuffer ||
-        !midRecordingReadFloatBuffer || !midRecordingClose || !midAudioSetThreadPriority) {
+    if (!midRegisterAudioDeviceCallback || !midUnregisterAudioDeviceCallback || !midAudioSetThreadPriority) {
         __android_log_print(ANDROID_LOG_WARN, "SDL",
                             "Missing some Java callbacks, do you have the latest version of SDLAudioManager.java?");
     }
@@ -787,14 +772,10 @@ JNIEXPORT jboolean JNICALL SDL_JAVA_INTERFACE(nativeAllowRecreateActivity)(
     return SDL_AtomicGet(&bAllowRecreateActivity);
 }
 
-/* Start up the SDL app */
-JNIEXPORT int JNICALL SDL_JAVA_INTERFACE(nativeRunMain)(JNIEnv *env, jclass cls, jstring library, jstring function, jobject array)
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeInitMainThread)(
+    JNIEnv *env, jclass jcls)
 {
-    int status = -1;
-    const char *library_file;
-    void *library_handle;
-
-    __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "nativeRunMain() %d time", run_count);
+    __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "nativeInitSDLThread() %d time", run_count);
     if (run_count == 1) {
         SDL_AddHintCallback(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, SDL_AllowRecreateActivityChanged, NULL);
     }
@@ -802,6 +783,22 @@ JNIEXPORT int JNICALL SDL_JAVA_INTERFACE(nativeRunMain)(JNIEnv *env, jclass cls,
 
     /* Save JNIEnv of SDLThread */
     Android_JNI_SetEnv(env);
+}
+
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeCleanupMainThread)(
+    JNIEnv *env, jclass jcls)
+{
+    /* This is a Java thread, it doesn't need to be Detached from the JVM.
+     * Set to mThreadKey value to NULL not to call pthread_create destructor 'Android_JNI_ThreadDestroyed' */
+    Android_JNI_SetEnv(NULL);
+}
+
+/* Start up the SDL app */
+JNIEXPORT int JNICALL SDL_JAVA_INTERFACE(nativeRunMain)(JNIEnv *env, jclass cls, jstring library, jstring function, jobject array)
+{
+    int status = -1;
+    const char *library_file;
+    void *library_handle;
 
     library_file = (*env)->GetStringUTFChars(env, library, NULL);
     library_handle = dlopen(library_file, RTLD_GLOBAL);
@@ -876,14 +873,115 @@ JNIEXPORT int JNICALL SDL_JAVA_INTERFACE(nativeRunMain)(JNIEnv *env, jclass cls,
     }
     (*env)->ReleaseStringUTFChars(env, library, library_file);
 
-    /* This is a Java thread, it doesn't need to be Detached from the JVM.
-     * Set to mThreadKey value to NULL not to call pthread_create destructor 'Android_JNI_ThreadDestroyed' */
-    Android_JNI_SetEnv(NULL);
-
     /* Do not issue an exit or the whole application will terminate instead of just the SDL thread */
     /* exit(status); */
 
     return status;
+}
+
+static int FindLifecycleEvent(SDL_AndroidLifecycleEvent event)
+{
+    for (int index = 0; index < Android_NumLifecycleEvents; ++index) {
+        if (Android_LifecycleEvents[index] == event) {
+            return index;
+        }
+    }
+    return -1;
+}
+
+static void RemoveLifecycleEvent(int index)
+{
+    if (index < Android_NumLifecycleEvents - 1) {
+        SDL_memcpy(&Android_LifecycleEvents[index], &Android_LifecycleEvents[index+1], (Android_NumLifecycleEvents - index - 1) * sizeof(Android_LifecycleEvents[index]));
+    }
+    --Android_NumLifecycleEvents;
+}
+
+void Android_SendLifecycleEvent(SDL_AndroidLifecycleEvent event)
+{
+    SDL_LockMutex(Android_LifecycleMutex);
+    {
+        int index;
+        SDL_bool add_event = SDL_TRUE;
+
+        switch (event) {
+        case SDL_ANDROID_LIFECYCLE_WAKE:
+            // We don't need more than one wake queued
+            index = FindLifecycleEvent(SDL_ANDROID_LIFECYCLE_WAKE);
+            if (index >= 0) {
+                add_event = SDL_FALSE;
+            }
+            break;
+        case SDL_ANDROID_LIFECYCLE_PAUSE:
+            // If we have a resume queued, just stay in the paused state
+            index = FindLifecycleEvent(SDL_ANDROID_LIFECYCLE_RESUME);
+            if (index >= 0) {
+                RemoveLifecycleEvent(index);
+                add_event = SDL_FALSE;
+            }
+            break;
+        case SDL_ANDROID_LIFECYCLE_RESUME:
+            // If we have a pause queued, just stay in the resumed state
+            index = FindLifecycleEvent(SDL_ANDROID_LIFECYCLE_PAUSE);
+            if (index >= 0) {
+                RemoveLifecycleEvent(index);
+                add_event = SDL_FALSE;
+            }
+            break;
+        case SDL_ANDROID_LIFECYCLE_LOWMEMORY:
+            // We don't need more than one low memory event queued
+            index = FindLifecycleEvent(SDL_ANDROID_LIFECYCLE_LOWMEMORY);
+            if (index >= 0) {
+                add_event = SDL_FALSE;
+            }
+            break;
+        case SDL_ANDROID_LIFECYCLE_DESTROY:
+            // Remove all other events, we're done!
+            while (Android_NumLifecycleEvents > 0) {
+                RemoveLifecycleEvent(0);
+            }
+            break;
+        default:
+            SDL_assert(!"Sending unexpected lifecycle event");
+            add_event = SDL_FALSE;
+            break;
+        }
+
+        if (add_event) {
+            SDL_assert(Android_NumLifecycleEvents < SDL_arraysize(Android_LifecycleEvents));
+            Android_LifecycleEvents[Android_NumLifecycleEvents++] = event;
+            SDL_SignalSemaphore(Android_LifecycleEventSem);
+        }
+    }
+    SDL_UnlockMutex(Android_LifecycleMutex);
+}
+
+SDL_bool Android_WaitLifecycleEvent(SDL_AndroidLifecycleEvent *event, Sint64 timeoutNS)
+{
+    SDL_bool got_event = SDL_FALSE;
+
+    while (!got_event && SDL_WaitSemaphoreTimeoutNS(Android_LifecycleEventSem, timeoutNS) == 0) {
+        SDL_LockMutex(Android_LifecycleMutex);
+        {
+            if (Android_NumLifecycleEvents > 0) {
+                *event = Android_LifecycleEvents[0];
+                RemoveLifecycleEvent(0);
+                got_event = SDL_TRUE;
+            }
+        }
+        SDL_UnlockMutex(Android_LifecycleMutex);
+    }
+    return got_event;
+}
+
+void Android_LockActivityMutex(void)
+{
+    SDL_LockMutex(Android_ActivityMutex);
+}
+
+void Android_UnlockActivityMutex(void)
+{
+    SDL_UnlockMutex(Android_ActivityMutex);
 }
 
 /* Drop file */
@@ -895,37 +993,6 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeDropFile)(
     SDL_SendDropFile(NULL, NULL, path);
     (*env)->ReleaseStringUTFChars(env, filename, path);
     SDL_SendDropComplete(NULL);
-}
-
-/* Lock / Unlock Mutex */
-void Android_ActivityMutex_Lock()
-{
-    SDL_LockMutex(Android_ActivityMutex);
-}
-
-void Android_ActivityMutex_Unlock()
-{
-    SDL_UnlockMutex(Android_ActivityMutex);
-}
-
-/* Lock the Mutex when the Activity is in its 'Running' state */
-void Android_ActivityMutex_Lock_Running()
-{
-    int pauseSignaled = 0;
-    int resumeSignaled = 0;
-
-retry:
-
-    SDL_LockMutex(Android_ActivityMutex);
-
-    pauseSignaled = SDL_GetSemaphoreValue(Android_PauseSem);
-    resumeSignaled = SDL_GetSemaphoreValue(Android_ResumeSem);
-
-    if (pauseSignaled > resumeSignaled) {
-        SDL_UnlockMutex(Android_ActivityMutex);
-        SDL_Delay(50);
-        goto retry;
-    }
 }
 
 /* Set screen resolution */
@@ -991,7 +1058,20 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeRotationChanged)(
 
     if (Android_Window) {
         SDL_VideoDisplay *display = SDL_GetVideoDisplay(SDL_GetPrimaryDisplay());
-        SDL_SendDisplayEvent(display, SDL_EVENT_DISPLAY_ORIENTATION, displayCurrentOrientation);
+        SDL_SendDisplayEvent(display, SDL_EVENT_DISPLAY_ORIENTATION, displayCurrentOrientation, 0);
+    }
+
+    SDL_UnlockMutex(Android_ActivityMutex);
+}
+
+JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeInsetsChanged)(
+    JNIEnv *env, jclass jcls,
+    jint left, jint right, jint top, jint bottom)
+{
+    SDL_LockMutex(Android_ActivityMutex);
+
+    if (Android_Window) {
+        SDL_SetWindowSafeAreaInsets(Android_Window, left, right, top, bottom);
     }
 
     SDL_UnlockMutex(Android_ActivityMutex);
@@ -1144,9 +1224,10 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeSurfaceCreated)(JNIEnv *env, j
     SDL_LockMutex(Android_ActivityMutex);
 
     if (Android_Window) {
-        SDL_WindowData *data = Android_Window->driverdata;
+        SDL_WindowData *data = Android_Window->internal;
 
         data->native_window = Android_JNI_GetNativeWindow();
+        SDL_SetPointerProperty(SDL_GetWindowProperties(Android_Window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, data->native_window);
         if (data->native_window == NULL) {
             SDL_SetError("Could not fetch native window from UI thread");
         }
@@ -1161,13 +1242,14 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeSurfaceChanged)(JNIEnv *env, j
     SDL_LockMutex(Android_ActivityMutex);
 
 #ifdef SDL_VIDEO_OPENGL_EGL
-    if (Android_Window) {
+    if (Android_Window && (Android_Window->flags & SDL_WINDOW_OPENGL)) {
         SDL_VideoDevice *_this = SDL_GetVideoDevice();
-        SDL_WindowData *data = Android_Window->driverdata;
+        SDL_WindowData *data = Android_Window->internal;
 
         /* If the surface has been previously destroyed by onNativeSurfaceDestroyed, recreate it here */
         if (data->egl_surface == EGL_NO_SURFACE) {
             data->egl_surface = SDL_EGL_CreateSurface(_this, Android_Window, (NativeWindowType)data->native_window);
+            SDL_SetPointerProperty(SDL_GetWindowProperties(Android_Window), SDL_PROP_WINDOW_ANDROID_SURFACE_POINTER, data->egl_surface);
         }
 
         /* GL Context handling is done in the event loop because this function is run from the Java thread */
@@ -1187,10 +1269,10 @@ retry:
     SDL_LockMutex(Android_ActivityMutex);
 
     if (Android_Window) {
-        SDL_WindowData *data = Android_Window->driverdata;
+        SDL_WindowData *data = Android_Window->internal;
 
         /* Wait for Main thread being paused and context un-activated to release 'egl_surface' */
-        if (!data->backup_done) {
+        if ((Android_Window->flags & SDL_WINDOW_OPENGL) && !data->backup_done) {
             nb_attempt -= 1;
             if (nb_attempt == 0) {
                 SDL_SetError("Try to release egl_surface with context probably still active");
@@ -1313,7 +1395,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeClipboardChanged)(
 JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeLowMemory)(
     JNIEnv *env, jclass cls)
 {
-    SDL_SendAppEvent(SDL_EVENT_LOW_MEMORY);
+    Android_SendLifecycleEvent(SDL_ANDROID_LIFECYCLE_LOWMEMORY);
 }
 
 /* Locale
@@ -1335,20 +1417,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(onNativeDarkModeChanged)(
 JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeSendQuit)(
     JNIEnv *env, jclass cls)
 {
-    /* Discard previous events. The user should have handled state storage
-     * in SDL_EVENT_WILL_ENTER_BACKGROUND. After nativeSendQuit() is called, no
-     * events other than SDL_EVENT_QUIT and SDL_EVENT_TERMINATING should fire */
-    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
-    /* Inject a SDL_EVENT_QUIT event */
-    SDL_SendQuit();
-    SDL_SendAppEvent(SDL_EVENT_TERMINATING);
-    /* Robustness: clear any pending Pause */
-    while (SDL_TryWaitSemaphore(Android_PauseSem) == 0) {
-        /* empty */
-    }
-    /* Resume the event loop so that the app can catch SDL_EVENT_QUIT which
-     * should now be the top event in the event queue. */
-    SDL_PostSemaphore(Android_ResumeSem);
+    Android_SendLifecycleEvent(SDL_ANDROID_LIFECYCLE_DESTROY);
 }
 
 /* Activity ends */
@@ -1362,15 +1431,17 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeQuit)(
         Android_ActivityMutex = NULL;
     }
 
-    if (Android_PauseSem) {
-        SDL_DestroySemaphore(Android_PauseSem);
-        Android_PauseSem = NULL;
+    if (Android_LifecycleMutex) {
+        SDL_DestroyMutex(Android_LifecycleMutex);
+        Android_LifecycleMutex = NULL;
     }
 
-    if (Android_ResumeSem) {
-        SDL_DestroySemaphore(Android_ResumeSem);
-        Android_ResumeSem = NULL;
+    if (Android_LifecycleEventSem) {
+        SDL_DestroySemaphore(Android_LifecycleEventSem);
+        Android_LifecycleEventSem = NULL;
     }
+
+    Android_NumLifecycleEvents = 0;
 
     Internal_Android_Destroy_AssetManager();
 
@@ -1388,9 +1459,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativePause)(
 {
     __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "nativePause()");
 
-    /* Signal the pause semaphore so the event loop knows to pause and (optionally) block itself.
-     * Sometimes 2 pauses can be queued (eg pause/resume/pause), so it's always increased. */
-    SDL_PostSemaphore(Android_PauseSem);
+    Android_SendLifecycleEvent(SDL_ANDROID_LIFECYCLE_PAUSE);
 }
 
 /* Resume */
@@ -1399,11 +1468,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeResume)(
 {
     __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "nativeResume()");
 
-    /* Signal the resume semaphore so the event loop knows to resume and restore the GL Context
-     * We can't restore the GL Context here because it needs to be done on the SDL main thread
-     * and this function will be called from the Java thread instead.
-     */
-    SDL_PostSemaphore(Android_ResumeSem);
+    Android_SendLifecycleEvent(SDL_ANDROID_LIFECYCLE_RESUME);
 }
 
 JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativeFocusChanged)(
@@ -1561,13 +1626,23 @@ void Android_JNI_SetOrientation(int w, int h, int resizable, const char *hint)
     (*env)->DeleteLocalRef(env, jhint);
 }
 
-void Android_JNI_MinizeWindow()
+SDL_DisplayOrientation Android_JNI_GetDisplayNaturalOrientation(void)
+{
+    return displayNaturalOrientation;
+}
+
+SDL_DisplayOrientation Android_JNI_GetDisplayCurrentOrientation(void)
+{
+    return displayCurrentOrientation;
+}
+
+void Android_JNI_MinizeWindow(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     (*env)->CallStaticVoidMethod(env, mActivityClass, midMinimizeWindow);
 }
 
-SDL_bool Android_JNI_ShouldMinimizeOnFocusLoss()
+SDL_bool Android_JNI_ShouldMinimizeOnFocusLoss(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     return (*env)->CallStaticBooleanMethod(env, mActivityClass, midShouldMinimizeOnFocusLoss);
@@ -1592,12 +1667,6 @@ SDL_bool Android_JNI_GetAccelerometerValues(float values[3])
 /*
  * Audio support
  */
-static int audioBufferFormat = 0;
-static jobject audioBuffer = NULL;
-static void *audioBufferPinned = NULL;
-static int recordingBufferFormat = 0;
-static jobject recordingBuffer = NULL;
-
 void Android_StartAudioHotplug(SDL_AudioDevice **default_playback, SDL_AudioDevice **default_recording)
 {
     JNIEnv *env = Android_JNI_GetEnv();
@@ -1610,282 +1679,6 @@ void Android_StopAudioHotplug(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midUnregisterAudioDeviceCallback);
-}
-
-int Android_JNI_OpenAudioDevice(SDL_AudioDevice *device)
-{
-    const SDL_bool recording = device->recording;
-    SDL_AudioSpec *spec = &device->spec;
-    const int device_id = (int) ((size_t) device->handle);
-    int audioformat;
-    jobject jbufobj = NULL;
-    jobject result;
-    int *resultElements;
-    jboolean isCopy;
-
-    JNIEnv *env = Android_JNI_GetEnv();
-
-    switch (spec->format) {
-    case SDL_AUDIO_U8:
-        audioformat = ENCODING_PCM_8BIT;
-        break;
-    case SDL_AUDIO_S16:
-        audioformat = ENCODING_PCM_16BIT;
-        break;
-    case SDL_AUDIO_F32:
-        audioformat = ENCODING_PCM_FLOAT;
-        break;
-    default:
-        return SDL_SetError("Unsupported audio format: 0x%x", spec->format);
-    }
-
-    if (recording) {
-        __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "SDL audio: opening device for recording");
-        result = (*env)->CallStaticObjectMethod(env, mAudioManagerClass, midRecordingOpen, spec->freq, audioformat, spec->channels, device->sample_frames, device_id);
-    } else {
-        __android_log_print(ANDROID_LOG_VERBOSE, "SDL", "SDL audio: opening device for playback");
-        result = (*env)->CallStaticObjectMethod(env, mAudioManagerClass, midAudioOpen, spec->freq, audioformat, spec->channels, device->sample_frames, device_id);
-    }
-    if (!result) {
-        /* Error during audio initialization, error printed from Java */
-        return SDL_SetError("Java-side initialization failed");
-    }
-
-    if ((*env)->GetArrayLength(env, (jintArray)result) != 4) {
-        return SDL_SetError("Unexpected results from Java, expected 4, got %d", (*env)->GetArrayLength(env, (jintArray)result));
-    }
-    isCopy = JNI_FALSE;
-    resultElements = (*env)->GetIntArrayElements(env, (jintArray)result, &isCopy);
-    spec->freq = resultElements[0];
-    audioformat = resultElements[1];
-    switch (audioformat) {
-    case ENCODING_PCM_8BIT:
-        spec->format = SDL_AUDIO_U8;
-        break;
-    case ENCODING_PCM_16BIT:
-        spec->format = SDL_AUDIO_S16;
-        break;
-    case ENCODING_PCM_FLOAT:
-        spec->format = SDL_AUDIO_F32;
-        break;
-    default:
-        return SDL_SetError("Unexpected audio format from Java: %d", audioformat);
-    }
-    spec->channels = resultElements[2];
-    device->sample_frames = resultElements[3];
-    (*env)->ReleaseIntArrayElements(env, (jintArray)result, resultElements, JNI_ABORT);
-    (*env)->DeleteLocalRef(env, result);
-
-    /* Allocating the audio buffer from the Java side and passing it as the return value for audioInit no longer works on
-     * Android >= 4.2 due to a "stale global reference" error. So now we allocate this buffer directly from this side. */
-    switch (audioformat) {
-    case ENCODING_PCM_8BIT:
-    {
-        jbyteArray audioBufferLocal = (*env)->NewByteArray(env, device->sample_frames * spec->channels);
-        if (audioBufferLocal) {
-            jbufobj = (*env)->NewGlobalRef(env, audioBufferLocal);
-            (*env)->DeleteLocalRef(env, audioBufferLocal);
-        }
-    } break;
-    case ENCODING_PCM_16BIT:
-    {
-        jshortArray audioBufferLocal = (*env)->NewShortArray(env, device->sample_frames * spec->channels);
-        if (audioBufferLocal) {
-            jbufobj = (*env)->NewGlobalRef(env, audioBufferLocal);
-            (*env)->DeleteLocalRef(env, audioBufferLocal);
-        }
-    } break;
-    case ENCODING_PCM_FLOAT:
-    {
-        jfloatArray audioBufferLocal = (*env)->NewFloatArray(env, device->sample_frames * spec->channels);
-        if (audioBufferLocal) {
-            jbufobj = (*env)->NewGlobalRef(env, audioBufferLocal);
-            (*env)->DeleteLocalRef(env, audioBufferLocal);
-        }
-    } break;
-    default:
-        return SDL_SetError("Unexpected audio format from Java: %d\n", audioformat);
-    }
-
-    if (!jbufobj) {
-        __android_log_print(ANDROID_LOG_WARN, "SDL", "SDL audio: could not allocate an audio buffer");
-        return SDL_OutOfMemory();
-    }
-
-    if (recording) {
-        recordingBufferFormat = audioformat;
-        recordingBuffer = jbufobj;
-    } else {
-        audioBufferFormat = audioformat;
-        audioBuffer = jbufobj;
-    }
-
-    if (!recording) {
-        isCopy = JNI_FALSE;
-
-        switch (audioformat) {
-        case ENCODING_PCM_8BIT:
-            audioBufferPinned = (*env)->GetByteArrayElements(env, (jbyteArray)audioBuffer, &isCopy);
-            break;
-        case ENCODING_PCM_16BIT:
-            audioBufferPinned = (*env)->GetShortArrayElements(env, (jshortArray)audioBuffer, &isCopy);
-            break;
-        case ENCODING_PCM_FLOAT:
-            audioBufferPinned = (*env)->GetFloatArrayElements(env, (jfloatArray)audioBuffer, &isCopy);
-            break;
-        default:
-            return SDL_SetError("Unexpected audio format from Java: %d\n", audioformat);
-        }
-    }
-    return 0;
-}
-
-SDL_DisplayOrientation Android_JNI_GetDisplayNaturalOrientation(void)
-{
-    return displayNaturalOrientation;
-}
-
-SDL_DisplayOrientation Android_JNI_GetDisplayCurrentOrientation(void)
-{
-    return displayCurrentOrientation;
-}
-
-void *Android_JNI_GetAudioBuffer(void)
-{
-    return audioBufferPinned;
-}
-
-void Android_JNI_WriteAudioBuffer(void)
-{
-    JNIEnv *env = Android_JNI_GetEnv();
-
-    switch (audioBufferFormat) {
-    case ENCODING_PCM_8BIT:
-        (*env)->ReleaseByteArrayElements(env, (jbyteArray)audioBuffer, (jbyte *)audioBufferPinned, JNI_COMMIT);
-        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioWriteByteBuffer, (jbyteArray)audioBuffer);
-        break;
-    case ENCODING_PCM_16BIT:
-        (*env)->ReleaseShortArrayElements(env, (jshortArray)audioBuffer, (jshort *)audioBufferPinned, JNI_COMMIT);
-        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioWriteShortBuffer, (jshortArray)audioBuffer);
-        break;
-    case ENCODING_PCM_FLOAT:
-        (*env)->ReleaseFloatArrayElements(env, (jfloatArray)audioBuffer, (jfloat *)audioBufferPinned, JNI_COMMIT);
-        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioWriteFloatBuffer, (jfloatArray)audioBuffer);
-        break;
-    default:
-        __android_log_print(ANDROID_LOG_WARN, "SDL", "SDL audio: unhandled audio buffer format");
-        break;
-    }
-
-    /* JNI_COMMIT means the changes are committed to the VM but the buffer remains pinned */
-}
-
-int Android_JNI_RecordAudioBuffer(void *buffer, int buflen)
-{
-    JNIEnv *env = Android_JNI_GetEnv();
-    jboolean isCopy = JNI_FALSE;
-    jint br = -1;
-
-    switch (recordingBufferFormat) {
-    case ENCODING_PCM_8BIT:
-        SDL_assert((*env)->GetArrayLength(env, (jshortArray)recordingBuffer) == buflen);
-        br = (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadByteBuffer, (jbyteArray)recordingBuffer, JNI_TRUE);
-        if (br > 0) {
-            jbyte *ptr = (*env)->GetByteArrayElements(env, (jbyteArray)recordingBuffer, &isCopy);
-            SDL_memcpy(buffer, ptr, br);
-            (*env)->ReleaseByteArrayElements(env, (jbyteArray)recordingBuffer, ptr, JNI_ABORT);
-        }
-        break;
-    case ENCODING_PCM_16BIT:
-        SDL_assert((*env)->GetArrayLength(env, (jshortArray)recordingBuffer) == (buflen / sizeof(Sint16)));
-        br = (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadShortBuffer, (jshortArray)recordingBuffer, JNI_TRUE);
-        if (br > 0) {
-            jshort *ptr = (*env)->GetShortArrayElements(env, (jshortArray)recordingBuffer, &isCopy);
-            br *= sizeof(Sint16);
-            SDL_memcpy(buffer, ptr, br);
-            (*env)->ReleaseShortArrayElements(env, (jshortArray)recordingBuffer, ptr, JNI_ABORT);
-        }
-        break;
-    case ENCODING_PCM_FLOAT:
-        SDL_assert((*env)->GetArrayLength(env, (jfloatArray)recordingBuffer) == (buflen / sizeof(float)));
-        br = (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadFloatBuffer, (jfloatArray)recordingBuffer, JNI_TRUE);
-        if (br > 0) {
-            jfloat *ptr = (*env)->GetFloatArrayElements(env, (jfloatArray)recordingBuffer, &isCopy);
-            br *= sizeof(float);
-            SDL_memcpy(buffer, ptr, br);
-            (*env)->ReleaseFloatArrayElements(env, (jfloatArray)recordingBuffer, ptr, JNI_ABORT);
-        }
-        break;
-    default:
-        __android_log_print(ANDROID_LOG_WARN, "SDL", "SDL audio: unhandled recording buffer format");
-        break;
-    }
-    return br;
-}
-
-void Android_JNI_FlushRecordedAudio(void)
-{
-    JNIEnv *env = Android_JNI_GetEnv();
-#if 0 /* !!! FIXME: this needs API 23, or it'll do blocking reads and never end. */
-    switch (recordingBufferFormat) {
-    case ENCODING_PCM_8BIT:
-        {
-            const jint len = (*env)->GetArrayLength(env, (jbyteArray)recordingBuffer);
-            while ((*env)->CallStaticIntMethod(env, mActivityClass, midRecordingReadByteBuffer, (jbyteArray)recordingBuffer, JNI_FALSE) == len) { /* spin */ }
-        }
-        break;
-    case ENCODING_PCM_16BIT:
-        {
-            const jint len = (*env)->GetArrayLength(env, (jshortArray)recordingBuffer);
-            while ((*env)->CallStaticIntMethod(env, mActivityClass, midRecordingReadShortBuffer, (jshortArray)recordingBuffer, JNI_FALSE) == len) { /* spin */ }
-        }
-        break;
-    case ENCODING_PCM_FLOAT:
-        {
-            const jint len = (*env)->GetArrayLength(env, (jfloatArray)recordingBuffer);
-            while ((*env)->CallStaticIntMethod(env, mActivityClass, midRecordingReadFloatBuffer, (jfloatArray)recordingBuffer, JNI_FALSE) == len) { /* spin */ }
-        }
-        break;
-    default:
-        __android_log_print(ANDROID_LOG_WARN, "SDL", "SDL audio: flushing unhandled recording buffer format");
-        break;
-    }
-#else
-    switch (recordingBufferFormat) {
-    case ENCODING_PCM_8BIT:
-        (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadByteBuffer, (jbyteArray)recordingBuffer, JNI_FALSE);
-        break;
-    case ENCODING_PCM_16BIT:
-        (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadShortBuffer, (jshortArray)recordingBuffer, JNI_FALSE);
-        break;
-    case ENCODING_PCM_FLOAT:
-        (*env)->CallStaticIntMethod(env, mAudioManagerClass, midRecordingReadFloatBuffer, (jfloatArray)recordingBuffer, JNI_FALSE);
-        break;
-    default:
-        __android_log_print(ANDROID_LOG_WARN, "SDL", "SDL audio: flushing unhandled recording buffer format");
-        break;
-    }
-#endif
-}
-
-void Android_JNI_CloseAudioDevice(const int recording)
-{
-    JNIEnv *env = Android_JNI_GetEnv();
-
-    if (recording) {
-        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midRecordingClose);
-        if (recordingBuffer) {
-            (*env)->DeleteGlobalRef(env, recordingBuffer);
-            recordingBuffer = NULL;
-        }
-    } else {
-        (*env)->CallStaticVoidMethod(env, mAudioManagerClass, midAudioClose);
-        if (audioBuffer) {
-            (*env)->DeleteGlobalRef(env, audioBuffer);
-            audioBuffer = NULL;
-            audioBufferPinned = NULL;
-        }
-    }
 }
 
 static void Android_JNI_AudioSetThreadPriority(int recording, int device_id)
@@ -1947,7 +1740,7 @@ static SDL_bool Android_JNI_ExceptionOccurred(SDL_bool silent)
     return SDL_FALSE;
 }
 
-static void Internal_Android_Create_AssetManager()
+static void Internal_Android_Create_AssetManager(void)
 {
 
     struct LocalReferenceHolder refs = LocalReferenceHolder_Setup(__FUNCTION__);
@@ -1986,7 +1779,7 @@ static void Internal_Android_Create_AssetManager()
     LocalReferenceHolder_Cleanup(&refs);
 }
 
-static void Internal_Android_Destroy_AssetManager()
+static void Internal_Android_Destroy_AssetManager(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
 
@@ -2206,7 +1999,7 @@ int Android_JNI_GetPowerInfo(int *plugged, int *charged, int *battery, int *seco
 }
 
 /* Add all touch devices */
-void Android_JNI_InitTouch()
+void Android_JNI_InitTouch(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     (*env)->CallStaticVoidMethod(env, mActivityClass, midInitTouch);
@@ -2245,7 +2038,7 @@ void Android_JNI_HapticStop(int device_id)
 /* See SDLActivity.java for constants. */
 #define COMMAND_SET_KEEP_SCREEN_ON 5
 
-int SDL_AndroidSendMessage(Uint32 command, int param)
+int SDL_SendAndroidMessage(Uint32 command, int param)
 {
     if (command >= 0x8000) {
         return Android_JNI_SendMessage(command, param);
@@ -2267,10 +2060,11 @@ int Android_JNI_SuspendScreenSaver(SDL_bool suspend)
     return Android_JNI_SendMessage(COMMAND_SET_KEEP_SCREEN_ON, (suspend == SDL_FALSE) ? 0 : 1);
 }
 
-void Android_JNI_ShowScreenKeyboard(SDL_Rect *inputRect)
+void Android_JNI_ShowScreenKeyboard(int input_type, SDL_Rect *inputRect)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     (*env)->CallStaticBooleanMethod(env, mActivityClass, midShowTextInput,
+                                    input_type,
                                     inputRect->x,
                                     inputRect->y,
                                     inputRect->w,
@@ -2392,12 +2186,12 @@ int Android_JNI_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *bu
 //////////////////////////////////////////////////////////////////////////////
 */
 
-void *SDL_AndroidGetJNIEnv(void)
+void *SDL_GetAndroidJNIEnv(void)
 {
     return Android_JNI_GetEnv();
 }
 
-void *SDL_AndroidGetActivity(void)
+void *SDL_GetAndroidActivity(void)
 {
     /* See SDL_system.h for caveats on using this function. */
 
@@ -2446,14 +2240,13 @@ SDL_bool SDL_IsDeXMode(void)
     return (*env)->CallStaticBooleanMethod(env, mActivityClass, midIsDeXMode);
 }
 
-void SDL_AndroidBackButton(void)
+void SDL_SendAndroidBackButton(void)
 {
     JNIEnv *env = Android_JNI_GetEnv();
     (*env)->CallStaticVoidMethod(env, mActivityClass, midManualBackButton);
 }
 
-// this caches a string until the process ends, so there's no need to use SDL_FreeLater.
-const char *SDL_AndroidGetInternalStoragePath(void)
+const char *SDL_GetAndroidInternalStoragePath(void)
 {
     static char *s_AndroidInternalFilesPath = NULL;
 
@@ -2507,22 +2300,19 @@ const char *SDL_AndroidGetInternalStoragePath(void)
     return s_AndroidInternalFilesPath;
 }
 
-int SDL_AndroidGetExternalStorageState(Uint32 *state)
+Uint32 SDL_GetAndroidExternalStorageState(void)
 {
     struct LocalReferenceHolder refs = LocalReferenceHolder_Setup(__FUNCTION__);
     jmethodID mid;
     jclass cls;
     jstring stateString;
     const char *state_string;
-    int stateFlags;
+    Uint32 stateFlags;
 
     JNIEnv *env = Android_JNI_GetEnv();
     if (!LocalReferenceHolder_Init(&refs, env)) {
         LocalReferenceHolder_Cleanup(&refs);
-        if (state) {
-            *state = 0;
-        }
-        return -1;
+        return 0;
     }
 
     cls = (*env)->FindClass(env, "android/os/Environment");
@@ -2546,14 +2336,11 @@ int SDL_AndroidGetExternalStorageState(Uint32 *state)
     (*env)->ReleaseStringUTFChars(env, stateString, state_string);
 
     LocalReferenceHolder_Cleanup(&refs);
-    if (state) {
-        *state = stateFlags;
-    }
-    return 0;
+
+    return stateFlags;
 }
 
-// this caches a string until the process ends, so there's no need to use SDL_FreeLater.
-const char *SDL_AndroidGetExternalStoragePath(void)
+const char *SDL_GetAndroidExternalStoragePath(void)
 {
     static char *s_AndroidExternalFilesPath = NULL;
 
@@ -2598,7 +2385,53 @@ const char *SDL_AndroidGetExternalStoragePath(void)
     return s_AndroidExternalFilesPath;
 }
 
-int SDL_AndroidShowToast(const char *message, int duration, int gravity, int xOffset, int yOffset)
+const char *SDL_GetAndroidCachePath(void)
+{
+    // !!! FIXME: lots of duplication with SDL_GetAndroidExternalStoragePath and SDL_GetAndroidInternalStoragePath; consolidate these functions!
+    static char *s_AndroidCachePath = NULL;
+
+    if (!s_AndroidCachePath) {
+        struct LocalReferenceHolder refs = LocalReferenceHolder_Setup(__FUNCTION__);
+        jmethodID mid;
+        jobject context;
+        jobject fileObject;
+        jstring pathString;
+        const char *path;
+
+        JNIEnv *env = Android_JNI_GetEnv();
+        if (!LocalReferenceHolder_Init(&refs, env)) {
+            LocalReferenceHolder_Cleanup(&refs);
+            return NULL;
+        }
+
+        /* context = SDLActivity.getContext(); */
+        context = (*env)->CallStaticObjectMethod(env, mActivityClass, midGetContext);
+
+        /* fileObj = context.getExternalFilesDir(); */
+        mid = (*env)->GetMethodID(env, (*env)->GetObjectClass(env, context),
+                                  "getCacheDir", "(Ljava/lang/String;)Ljava/io/File;");
+        fileObject = (*env)->CallObjectMethod(env, context, mid, NULL);
+        if (!fileObject) {
+            SDL_SetError("Couldn't get cache directory");
+            LocalReferenceHolder_Cleanup(&refs);
+            return NULL;
+        }
+
+        /* path = fileObject.getAbsolutePath(); */
+        mid = (*env)->GetMethodID(env, (*env)->GetObjectClass(env, fileObject),
+                                  "getAbsolutePath", "()Ljava/lang/String;");
+        pathString = (jstring)(*env)->CallObjectMethod(env, fileObject, mid);
+
+        path = (*env)->GetStringUTFChars(env, pathString, NULL);
+        s_AndroidCachePath = SDL_strdup(path);
+        (*env)->ReleaseStringUTFChars(env, pathString, path);
+
+        LocalReferenceHolder_Cleanup(&refs);
+    }
+    return s_AndroidCachePath;
+}
+
+int SDL_ShowAndroidToast(const char *message, int duration, int gravity, int xOffset, int yOffset)
 {
     return Android_JNI_ShowToast(message, duration, gravity, xOffset, yOffset);
 }
@@ -2669,7 +2502,7 @@ typedef struct NativePermissionRequestInfo
 {
     int request_code;
     char *permission;
-    SDL_AndroidRequestPermissionCallback callback;
+    SDL_RequestAndroidPermissionCallback callback;
     void *userdata;
     struct NativePermissionRequestInfo *next;
 } NativePermissionRequestInfo;
@@ -2697,7 +2530,7 @@ JNIEXPORT void JNICALL SDL_JAVA_INTERFACE(nativePermissionResult)(
     SDL_UnlockMutex(Android_ActivityMutex);
 }
 
-int SDL_AndroidRequestPermission(const char *permission, SDL_AndroidRequestPermissionCallback cb, void *userdata)
+int SDL_RequestAndroidPermission(const char *permission, SDL_RequestAndroidPermissionCallback cb, void *userdata)
 {
     if (!permission) {
         return SDL_InvalidParamError("permission");

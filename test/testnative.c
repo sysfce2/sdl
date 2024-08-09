@@ -151,7 +151,7 @@ int main(int argc, char *argv[])
         quit(3);
     }
     props = SDL_CreateProperties();
-    SDL_SetProperty(props, "sdl2-compat.external_window", native_window);
+    SDL_SetPointerProperty(props, "sdl2-compat.external_window", native_window);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN, SDL_TRUE);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, WINDOW_W);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, WINDOW_H);
@@ -206,6 +206,14 @@ int main(int argc, char *argv[])
     while (!done) {
         /* Check for events */
         while (SDL_PollEvent(&event)) {
+            if (state->verbose & VERBOSE_EVENT) {
+                if (((event.type != SDL_EVENT_MOUSE_MOTION) &&
+                    (event.type != SDL_EVENT_FINGER_MOTION)) ||
+                    (state->verbose & VERBOSE_MOTION)) {
+                    SDLTest_PrintEvent(&event);
+                }
+            }
+
             switch (event.type) {
             case SDL_EVENT_WINDOW_EXPOSED:
                 SDL_SetRenderDrawColor(renderer, 0xA0, 0xA0, 0xA0, 0xFF);

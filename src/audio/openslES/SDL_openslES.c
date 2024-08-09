@@ -194,7 +194,7 @@ static void bqRecorderCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
     struct SDL_PrivateAudioData *audiodata = (struct SDL_PrivateAudioData *)context;
 
     LOGV("SLES: Recording Callback");
-    SDL_PostSemaphore(audiodata->playsem);
+    SDL_SignalSemaphore(audiodata->playsem);
 }
 
 static void OPENSLES_DestroyPCMRecorder(SDL_AudioDevice *device)
@@ -229,7 +229,7 @@ static void OPENSLES_DestroyPCMRecorder(SDL_AudioDevice *device)
 }
 
 // !!! FIXME: make this non-blocking!
-static void SDLCALL AndroidRequestPermissionBlockingCallback(void *userdata, const char *permission, SDL_bool granted)
+static void SDLCALL RequestAndroidPermissionBlockingCallback(void *userdata, const char *permission, SDL_bool granted)
 {
     SDL_AtomicSet((SDL_AtomicInt *) userdata, granted ? 1 : -1);
 }
@@ -251,7 +251,7 @@ static int OPENSLES_CreatePCMRecorder(SDL_AudioDevice *device)
     {
         SDL_AtomicInt permission_response;
         SDL_AtomicSet(&permission_response, 0);
-        if (SDL_AndroidRequestPermission("android.permission.RECORD_AUDIO", AndroidRequestPermissionBlockingCallback, &permission_response) == -1) {
+        if (SDL_RequestAndroidPermission("android.permission.RECORD_AUDIO", RequestAndroidPermissionBlockingCallback, &permission_response) == -1) {
             return -1;
         }
 
@@ -390,7 +390,7 @@ static void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
     struct SDL_PrivateAudioData *audiodata = (struct SDL_PrivateAudioData *)context;
 
     LOGV("SLES: Playback Callback");
-    SDL_PostSemaphore(audiodata->playsem);
+    SDL_SignalSemaphore(audiodata->playsem);
 }
 
 static void OPENSLES_DestroyPCMPlayer(SDL_AudioDevice *device)
@@ -652,8 +652,19 @@ static int OPENSLES_WaitDevice(SDL_AudioDevice *device)
 
     LOGV("OPENSLES_WaitDevice()");
 
-    // Wait for an audio chunk to finish
-    return SDL_WaitSemaphore(audiodata->playsem);
+    while (!SDL_AtomicGet(&device->shutdown)) {
+        // this semaphore won't fire when the app is in the background (OPENSLES_PauseDevices was called).
+        const int rc = SDL_WaitSemaphoreTimeout(audiodata->playsem, 100);
+        if (rc == -1) {  // uh, what?
+            return -1;
+        } else if (rc == 0) {
+            return 0;  // semaphore was signaled, let's go!
+        } else {
+            SDL_assert(rc == SDL_MUTEX_TIMEDOUT);
+        }
+        // Still waiting on the semaphore (or the system), check other things then wait again.
+    }
+    return 0;
 }
 
 static int OPENSLES_PlayDevice(SDL_AudioDevice *device, const Uint8 *buffer, int buflen)
@@ -673,7 +684,7 @@ static int OPENSLES_PlayDevice(SDL_AudioDevice *device, const Uint8 *buffer, int
     // If Enqueue fails, callback won't be called.
     // Post the semaphore, not to run out of buffer
     if (SL_RESULT_SUCCESS != result) {
-        SDL_PostSemaphore(audiodata->playsem);
+        SDL_SignalSemaphore(audiodata->playsem);
     }
 
     return 0;

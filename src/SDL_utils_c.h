@@ -32,7 +32,18 @@ extern void SDL_CalculateFraction(float x, int *numerator, int *denominator);
 
 extern SDL_bool SDL_endswith(const char *string, const char *suffix);
 
-extern char *SDL_UCS4ToUTF8(Uint32 ch, char *dst);
+/** Convert URI to a local filename, stripping the "file://"
+ *  preamble and hostname if present, and writes the result
+ *  to the dst buffer. Since URI-encoded characters take
+ *  three times the space of normal characters, src and dst
+ *  can safely point to the same buffer for in situ conversion.
+ *
+ *  Returns the number of decoded bytes that wound up in
+ *  the destination buffer, excluding the terminating NULL byte.
+ *
+ *  On error, -1 is returned.
+ */
+extern int SDL_URIToLocal(const char *src, char *dst);
 
 typedef enum
 {
@@ -53,5 +64,7 @@ extern Uint32 SDL_GetNextObjectID(void);
 extern void SDL_SetObjectValid(void *object, SDL_ObjectType type, SDL_bool valid);
 extern SDL_bool SDL_ObjectValid(void *object, SDL_ObjectType type);
 extern void SDL_SetObjectsInvalid(void);
+
+extern const char *SDL_GetPersistentString(const char *string);
 
 #endif /* SDL_utils_h_ */
